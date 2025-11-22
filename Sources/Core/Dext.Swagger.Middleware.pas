@@ -20,13 +20,14 @@ type
     FJsonPath: string;
     FGenerator: TOpenAPIGenerator;
     FCachedJson: string;
+    FAppBuilder: IApplicationBuilder; // Store reference to app builder
     
     function GetSwaggerUIHtml: string;
     function ShouldHandleRequest(const APath: string): Boolean;
     procedure HandleSwaggerUI(AContext: IHttpContext);
     procedure HandleSwaggerJson(AContext: IHttpContext);
   public
-    constructor Create(const AOptions: TOpenAPIOptions; const ASwaggerPath: string = '/swagger'; const AJsonPath: string = '/swagger.json');
+    constructor Create(AAppBuilder: IApplicationBuilder; const AOptions: TOpenAPIOptions; const ASwaggerPath: string = '/swagger'; const AJsonPath: string = '/swagger.json');
     destructor Destroy; override;
     
     procedure Invoke(AContext: IHttpContext; ANext: TRequestDelegate); override;
@@ -52,9 +53,10 @@ uses
 
 { TSwaggerMiddleware }
 
-constructor TSwaggerMiddleware.Create(const AOptions: TOpenAPIOptions; const ASwaggerPath: string; const AJsonPath: string);
+constructor TSwaggerMiddleware.Create(AAppBuilder: IApplicationBuilder; const AOptions: TOpenAPIOptions; const ASwaggerPath: string; const AJsonPath: string);
 begin
   inherited Create;
+  FAppBuilder := AAppBuilder;
   FOptions := AOptions;
   FSwaggerPath := ASwaggerPath;
   FJsonPath := AJsonPath;
@@ -123,21 +125,12 @@ end;
 
 procedure TSwaggerMiddleware.HandleSwaggerJson(AContext: IHttpContext);
 var
-  AppBuilder: IApplicationBuilder;
   Endpoints: TArray<TEndpointMetadata>;
 begin
-  // Get the application builder from the service provider
-  if not Supports(AContext.Services.GetService(TServiceType.FromInterface(IApplicationBuilder)), IApplicationBuilder, AppBuilder) then
-  begin
-    AContext.Response.StatusCode := 500;
-    AContext.Response.Write('Application builder not found in service provider');
-    Exit;
-  end;
-  
   // Generate JSON if not cached
   if FCachedJson = '' then
   begin
-    Endpoints := AppBuilder.GetRoutes;
+    Endpoints := FAppBuilder.GetRoutes;
     FCachedJson := FGenerator.GenerateJson(Endpoints);
   end;
   
@@ -163,8 +156,93 @@ end;
 { TSwaggerExtensions }
 
 class function TSwaggerExtensions.UseSwagger(App: IApplicationBuilder; const AOptions: TOpenAPIOptions): IApplicationBuilder;
+var
+  Generator: TOpenAPIGenerator;
+  CachedJson: string;
+  SwaggerPath: string;
+  JsonPath: string;
+  Title: string;
 begin
-  Result := App.UseMiddleware(TSwaggerMiddleware, TValue.From<TOpenAPIOptions>(AOptions));
+  Generator := TOpenAPIGenerator.Create(AOptions);
+  CachedJson := '';
+  SwaggerPath := '/swagger';
+  JsonPath := '/swagger.json';
+  Title := AOptions.Title;
+  
+  Result := App.Use(
+    procedure(AContext: IHttpContext; ANext: TRequestDelegate)
+    var
+      Endpoints: TArray<TEndpointMetadata>;
+      Html: string;
+    begin
+      // Check if this is a Swagger request
+      if AContext.Request.Path.Equals(SwaggerPath) then
+      begin
+        // Build Swagger UI HTML
+        Html := 
+          '<!DOCTYPE html>' + sLineBreak +
+          '<html lang="en">' + sLineBreak +
+          '<head>' + sLineBreak +
+          '  <meta charset="UTF-8">' + sLineBreak +
+          '  <meta name="viewport" content="width=device-width, initial-scale=1.0">' + sLineBreak +
+          '  <title>' + Title + ' - Swagger UI</title>' + sLineBreak +
+          '  <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5.10.0/swagger-ui.css" />' + sLineBreak +
+          '  <style>' + sLineBreak +
+          '    html { box-sizing: border-box; overflow: -moz-scrollbars-vertical; overflow-y: scroll; }' + sLineBreak +
+          '    *, *:before, *:after { box-sizing: inherit; }' + sLineBreak +
+          '    body { margin: 0; padding: 0; }' + sLineBreak +
+          '  </style>' + sLineBreak +
+          '</head>' + sLineBreak +
+          '<body>' + sLineBreak +
+          '  <div id="swagger-ui"></div>' + sLineBreak +
+          '  <script src="https://unpkg.com/swagger-ui-dist@5.10.0/swagger-ui-bundle.js"></script>' + sLineBreak +
+          '  <script src="https://unpkg.com/swagger-ui-dist@5.10.0/swagger-ui-standalone-preset.js"></script>' + sLineBreak +
+          '  <script>' + sLineBreak +
+          '    window.onload = function() {' + sLineBreak +
+          '      window.ui = SwaggerUIBundle({' + sLineBreak +
+          '        url: "' + JsonPath + '",' + sLineBreak +
+          '        dom_id: "#swagger-ui",' + sLineBreak +
+          '        deepLinking: true,' + sLineBreak +
+          '        presets: [' + sLineBreak +
+          '          SwaggerUIBundle.presets.apis,' + sLineBreak +
+          '          SwaggerUIStandalonePreset' + sLineBreak +
+          '        ],' + sLineBreak +
+          '        plugins: [' + sLineBreak +
+          '          SwaggerUIBundle.plugins.DownloadUrl' + sLineBreak +
+          '        ],' + sLineBreak +
+          '        layout: "StandaloneLayout"' + sLineBreak +
+          '      });' + sLineBreak +
+          '    };' + sLineBreak +
+          '  </script>' + sLineBreak +
+          '</body>' + sLineBreak +
+          '</html>';
+        
+        // Serve Swagger UI
+        AContext.Response.StatusCode := 200;
+        AContext.Response.SetContentType('text/html; charset=utf-8');
+        AContext.Response.Write(Html);
+      end
+      else if AContext.Request.Path.Equals(JsonPath) then
+      begin
+        // Serve OpenAPI JSON
+        if CachedJson = '' then
+        begin
+          Endpoints := App.GetRoutes;
+          CachedJson := Generator.GenerateJson(Endpoints);
+        end;
+        
+        AContext.Response.StatusCode := 200;
+        AContext.Response.SetContentType('application/json; charset=utf-8');
+        AContext.Response.AddHeader('Access-Control-Allow-Origin', '*');
+        AContext.Response.Write(CachedJson);
+      end
+      else
+      begin
+        // Not a Swagger request, continue pipeline
+        ANext(AContext);
+      end;
+    end
+  );
 end;
 
 class function TSwaggerExtensions.UseSwagger(App: IApplicationBuilder): IApplicationBuilder;
