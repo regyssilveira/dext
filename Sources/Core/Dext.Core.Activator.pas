@@ -145,7 +145,7 @@ begin
              ServiceType := TServiceType.FromInterface(Guid);
              var Intf := AProvider.GetServiceAsInterface(ServiceType);
              if Intf <> nil then
-               ResolvedService := TValue.From(Intf);
+               TValue.Make(@Intf, ParamType.Handle, ResolvedService);
           end
           else if ParamType.TypeKind = tkClass then
           begin

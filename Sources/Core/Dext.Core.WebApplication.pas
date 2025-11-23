@@ -84,6 +84,9 @@ var
 begin
   WriteLn('🔍 Scanning for controllers...');
 
+  // ✅ CRITICAL: Rebuild ServiceProvider to include controllers registered via AddControllers
+  FServiceProvider := FServices.BuildServiceProvider;
+  
   Scanner := TControllerScanner.Create(FServiceProvider);
   RouteCount := Scanner.RegisterRoutes(FAppBuilder);
 

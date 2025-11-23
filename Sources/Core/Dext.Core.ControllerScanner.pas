@@ -159,53 +159,33 @@ begin
 
     for RttiType in Types do
     begin
-      // ✅ DEBUG: Log cada tipo
-      WriteLn('  📝 Type: ', RttiType.Name, ' | Kind: ',
-        GetEnumName(TypeInfo(TTypeKind), Integer(RttiType.TypeKind)));
-
       // ✅ FILTRAR: Records ou Classes
       if (RttiType.TypeKind in [tkRecord, tkClass]) then
       begin
-        WriteLn('    ✅ Is record/class: ', RttiType.Name);
-
         // Verificar se tem métodos com atributos de rota
         var HasRouteMethods := False;
         var MethodsList: TList<TControllerMethod> := TList<TControllerMethod>.Create;
 
         try
           var Methods := RttiType.GetMethods;
-          WriteLn('    🔍 Checking ', Length(Methods), ' methods...');
 
           for Method in Methods do
           begin
-            WriteLn('      🎯 Method: ', Method.Name, ' | Static: ', Method.IsStatic);
-
             // ✅ APENAS MÉTODOS ESTÁTICOS (para records) ou PÚBLICOS (para classes)
             if (RttiType.TypeKind = tkRecord) and (not Method.IsStatic) then
-            begin
-              WriteLn('        ❌ Skipping - not static (record)');
               Continue;
-            end;
             
             // Para classes, aceitamos métodos de instância
             if (RttiType.TypeKind = tkClass) and (Method.Visibility <> mvPublic) and (Method.Visibility <> mvPublished) then
-            begin
-               WriteLn('        ❌ Skipping - not public (class)');
                Continue;
-            end;
 
             var Attributes := Method.GetAttributes;
-            WriteLn('        📋 Attributes: ', Length(Attributes));
 
             // ✅ PROCURAR ATRIBUTOS [DextGet], [DextPost], etc.
             for Attr in Attributes do
             begin
-              WriteLn('        🏷️  Attribute: ', Attr.ClassName);
-
               if Attr is DextRouteAttribute then
               begin
-                WriteLn('        ✅ FOUND ROUTE ATTRIBUTE!');
-
                 MethodInfo.Method := Method;
                 MethodInfo.RouteAttribute := DextRouteAttribute(Attr);
                 MethodInfo.Path := MethodInfo.RouteAttribute.Path;
@@ -233,16 +213,11 @@ begin
               if Attr is DextControllerAttribute then
               begin
                 ControllerInfo.ControllerAttribute := DextControllerAttribute(Attr);
-                WriteLn('    🎯 Controller prefix: ', ControllerInfo.ControllerAttribute.Prefix);
                 Break;
               end;
             end;
 
             Controllers.Add(ControllerInfo);
-          end
-          else
-          begin
-            WriteLn('    ❌ No route methods found in ', RttiType.Name);
           end;
 
         finally
@@ -323,59 +298,40 @@ begin
       end;
 
       // ✅ REGISTRAR ROTA NO APPLICATION BUILDER
-      if ControllerMethod.HttpMethod = 'GET' then
-          AppBuilder.MapGet(FullPath,
-            procedure(Context: IHttpContext)
-            begin
-              // TODO: Implementar invocação automática com binding
-              Context.Response.Json(Format('{"message": "Auto-route: %s"}', [FullPath]));
-            end)
-      else
-      if ControllerMethod.HttpMethod = 'POST' then
-          AppBuilder.MapPost(FullPath,
-            procedure(Context: IHttpContext)
-            begin
-              Context.Response.Json(Format('{"message": "Auto-route: %s"}', [FullPath]));
-            end)
+      // Usamos MapEndpoint para registrar explicitamente o método HTTP correto
+      AppBuilder.MapEndpoint(ControllerMethod.HttpMethod, FullPath,
+        procedure(Context: IHttpContext)
+        begin
+          // Capturar variáveis para o closure
+          var ControllerType := Controller.RttiType;
+          var TargetMethod := ControllerMethod.Method;
 
-        // Adicionar outros métodos: PUT, DELETE, PATCH, etc.
-      else
-      begin
-        // ✅ REGISTRO GENÉRICO PARA INSTÂNCIA OU ESTÁTICO
-        // Precisamos capturar o tipo do controller e o método para usar no closure
-        var ControllerType := Controller.RttiType;
-        var TargetMethod := ControllerMethod.Method;
-        
-        AppBuilder.Map(FullPath,
-          procedure(Context: IHttpContext)
+          // Se for classe, resolver instância e invocar
+          if ControllerType.TypeKind = tkClass then
           begin
-            // Se for classe, resolver instância e invocar
-            if ControllerType.TypeKind = tkClass then
-            begin
-              var ControllerInstance := Context.GetServices.GetService(
-                TServiceType.FromClass(ControllerType.AsInstance.MetaclassType));
-                
-              if ControllerInstance = nil then
-                raise Exception.CreateFmt('Controller %s not found in DI container', [ControllerType.Name]);
-                
-              var Binder: IModelBinder := TModelBinder.Create;
-              var Invoker := THandlerInvoker.Create(Context, Binder);
-              try
-                Invoker.InvokeAction(ControllerInstance, TargetMethod);
-              finally
-                Invoker.Free;
-                Binder := nil; // Interface managed
-                // ControllerInstance lifecycle managed by DI (Transient/Scoped)
-              end;
-            end
-            else
-            begin
-              // Fallback para records estáticos (apenas log por enquanto, ou implementar InvokeStatic)
-              Context.Response.Json(Format('{"message": "Auto-route: %s (%s)"}',
-                [FullPath, ControllerMethod.HttpMethod]));
+            var ControllerInstance := Context.GetServices.GetService(
+              TServiceType.FromClass(ControllerType.AsInstance.MetaclassType));
+              
+            if ControllerInstance = nil then
+              raise Exception.CreateFmt('Controller %s not found in DI container', [ControllerType.Name]);
+              
+            var Binder: IModelBinder := TModelBinder.Create;
+            var Invoker := THandlerInvoker.Create(Context, Binder);
+            try
+              Invoker.InvokeAction(ControllerInstance, TargetMethod);
+            finally
+              Invoker.Free;
+              Binder := nil; // Interface managed
+              // ControllerInstance lifecycle managed by DI (Transient/Scoped)
             end;
-          end);
-      end;
+          end
+          else
+          begin
+            // Fallback para records estáticos (apenas log por enquanto, ou implementar InvokeStatic)
+            Context.Response.Json(Format('{"message": "Auto-route: %s (%s) - Static Record not fully supported yet"}',
+              [FullPath, ControllerMethod.HttpMethod]));
+          end;
+        end);
 
       // ✅ PROCESSAR ATRIBUTOS DE SEGURANÇA (SwaggerAuthorize)
       var SecuritySchemes := TList<string>.Create;
