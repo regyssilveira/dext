@@ -67,7 +67,7 @@ type
     FLogger: ILogger;
     FOptions: TExceptionHandlerOptions;
   public
-    constructor Create(ALogger: ILogger; AOptions: TExceptionHandlerOptions);
+    constructor Create(AOptions: TExceptionHandlerOptions; ALogger: ILogger);
     procedure Invoke(AContext: IHttpContext; ANext: TRequestDelegate); override;
   end;
 
@@ -86,7 +86,7 @@ type
     FLogger: ILogger;
     FOptions: THttpLoggingOptions;
   public
-    constructor Create(ALogger: ILogger; AOptions: THttpLoggingOptions);
+    constructor Create(AOptions: THttpLoggingOptions; ALogger: ILogger);
     procedure Invoke(AContext: IHttpContext; ANext: TRequestDelegate); override;
   end;
 
@@ -163,7 +163,7 @@ end;
 
 { TExceptionHandlerMiddleware }
 
-constructor TExceptionHandlerMiddleware.Create(ALogger: ILogger; AOptions: TExceptionHandlerOptions);
+constructor TExceptionHandlerMiddleware.Create(AOptions: TExceptionHandlerOptions; ALogger: ILogger);
 begin
   inherited Create;
   FLogger := ALogger;
@@ -235,7 +235,7 @@ end;
 
 { THttpLoggingMiddleware }
 
-constructor THttpLoggingMiddleware.Create(ALogger: ILogger; AOptions: THttpLoggingOptions);
+constructor THttpLoggingMiddleware.Create(AOptions: THttpLoggingOptions; ALogger: ILogger);
 begin
   // inherited Create;
   FLogger := ALogger;
