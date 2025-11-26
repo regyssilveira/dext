@@ -60,6 +60,7 @@ type
     function GetResponse: IHttpResponse;
     procedure SetResponse(const AValue: IHttpResponse);
     function GetServices: IServiceProvider;
+    procedure SetServices(const AValue: IServiceProvider);
     function GetUser: IClaimsPrincipal;
     procedure SetUser(const AValue: IClaimsPrincipal);
   end;
@@ -272,6 +273,11 @@ end;
 function TIndyHttpContext.GetServices: IServiceProvider;
 begin
   Result := FServices;
+end;
+
+procedure TIndyHttpContext.SetServices(const AValue: IServiceProvider);
+begin
+  FServices := AValue;
 end;
 
 function TIndyHttpContext.GetUser: IClaimsPrincipal;

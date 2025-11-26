@@ -75,11 +75,12 @@ type
     function GetResponse: IHttpResponse;
     procedure SetResponse(const AValue: IHttpResponse);
     function GetServices: IServiceProvider;
+    procedure SetServices(const AValue: IServiceProvider);
     function GetUser: IClaimsPrincipal;
     procedure SetUser(const AValue: IClaimsPrincipal);
     property Request: IHttpRequest read GetRequest;
     property Response: IHttpResponse read GetResponse write SetResponse;
-    property Services: IServiceProvider read GetServices;
+    property Services: IServiceProvider read GetServices write SetServices;
     property User: IClaimsPrincipal read GetUser write SetUser;
   end;
 

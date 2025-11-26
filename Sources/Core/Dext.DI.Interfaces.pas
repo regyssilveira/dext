@@ -54,6 +54,25 @@ type
     function GetService(const AServiceType: TServiceType): TObject;
     function GetServiceAsInterface(const AServiceType: TServiceType): IInterface;
     function GetRequiredService(const AServiceType: TServiceType): TObject;
+    function CreateScope: IInterface; // Returns IServiceScope
+  end;
+
+  /// <summary>
+  ///   Represents a scope for service resolution.
+  ///   Scoped services are created once per scope and shared within that scope.
+  /// </summary>
+  IServiceScope = interface
+    ['{C3F8E4D5-7A9B-4C6D-8E2F-9A1B3C4D5E6F}']
+    function GetServiceProvider: IServiceProvider;
+    property ServiceProvider: IServiceProvider read GetServiceProvider;
+  end;
+
+  /// <summary>
+  ///   Factory for creating service scopes.
+  /// </summary>
+  IServiceScopeFactory = interface
+    ['{D4A9F5E6-8B1C-4D7E-9F3A-1B2C3D4E5F6A}']
+    function CreateScope: IServiceScope;
   end;
 
   EDextDIException = class(Exception);

@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections,
+  System.SysUtils, System.Generics.Collections, System.SyncObjs,
   Dext.DI.Interfaces;
 
 type
@@ -18,22 +18,38 @@ type
       AFactory: TFunc<IServiceProvider, TObject>);
   end;
 
+  TDextServiceScope = class;
+
   TDextServiceProvider = class(TInterfacedObject, IServiceProvider)
   private
     FDescriptors: TObjectList<TServiceDescriptor>;
     FSingletons: TDictionary<string, TObject>;
     FSingletonInterfaces: TDictionary<string, IInterface>;
-    FScopedInstances: TDictionary<TServiceType, TObject>;
+    FIsRootProvider: Boolean;
+    FParentProvider: IServiceProvider;
+    FScopedInstances: TDictionary<string, TObject>;
+    FScopedInterfaces: TDictionary<string, IInterface>;
+    FLock: TCriticalSection;
 
     function CreateInstance(ADescriptor: TServiceDescriptor): TObject;
     function FindDescriptor(const AServiceType: TServiceType): TServiceDescriptor;
   public
-    constructor Create(const ADescriptors: TObjectList<TServiceDescriptor>);
+    constructor Create(const ADescriptors: TObjectList<TServiceDescriptor>); overload;
+    constructor CreateScoped(AParent: IServiceProvider; const ADescriptors: TObjectList<TServiceDescriptor>); overload;
     destructor Destroy; override;
 
     function GetService(const AServiceType: TServiceType): TObject;
     function GetServiceAsInterface(const AServiceType: TServiceType): IInterface;
     function GetRequiredService(const AServiceType: TServiceType): TObject;
+    function CreateScope: IInterface; // Returns IServiceScope
+  end;
+
+  TDextServiceScope = class(TInterfacedObject, IServiceScope)
+  private
+    FServiceProvider: IServiceProvider;
+  public
+    constructor Create(AServiceProvider: IServiceProvider);
+    function GetServiceProvider: IServiceProvider;
   end;
 
   TDextServiceCollection = class(TInterfacedObject, IServiceCollection)
@@ -134,34 +150,72 @@ begin
   FDescriptors := ADescriptors;
   FSingletons := TDictionary<string, TObject>.Create;
   FSingletonInterfaces  := TDictionary<string, IInterface>.Create;
-  FScopedInstances := TDictionary<TServiceType, TObject>.Create;
+  FScopedInstances := TDictionary<string, TObject>.Create;
+  FScopedInterfaces := TDictionary<string, IInterface>.Create;
+  FLock := TCriticalSection.Create;
+  FIsRootProvider := True;
+  FParentProvider := nil;
+end;
+
+constructor TDextServiceProvider.CreateScoped(AParent: IServiceProvider; const ADescriptors: TObjectList<TServiceDescriptor>);
+begin
+  inherited Create;
+  FDescriptors := ADescriptors;
+  FSingletons := nil; // Scoped providers don't create singletons
+  FSingletonInterfaces := nil;
+  FScopedInstances := TDictionary<string, TObject>.Create;
+  FScopedInterfaces := TDictionary<string, IInterface>.Create;
+  FLock := TCriticalSection.Create;
+  FIsRootProvider := False;
+  FParentProvider := AParent;
 end;
 
 destructor TDextServiceProvider.Destroy;
 var
   SingletonPair: TPair<string, TObject>;
-  Pair: TPair<TServiceType, TObject>;
-  InterfacePair: TPair<string, IInterface>;
+  ScopedPair: TPair<string, TObject>;
 begin
-  // Liberar instâncias singleton
-  for SingletonPair in FSingletons do
-    if Assigned(SingletonPair.Value) then
-      SingletonPair.Value.Free;
-  FSingletons.Free;
-
-  for InterfacePair in FSingletonInterfaces do
-    if Assigned(InterfacePair.Value) then
-      InterfacePair.Value._Release;
-  FSingletonInterfaces.Free;
+  // Liberar instâncias singleton (apenas no root provider)
+  if FIsRootProvider then
+  begin
+    if Assigned(FSingletons) then
+    begin
+      for SingletonPair in FSingletons do
+        if Assigned(SingletonPair.Value) then
+          SingletonPair.Value.Free;
+      FSingletons.Free;
+    end;
+    
+    if Assigned(FSingletonInterfaces) then
+      FSingletonInterfaces.Free;
+  end;
 
   // Liberar instâncias scoped
-  for Pair in FScopedInstances do
-    if Assigned(Pair.Value) then
-      Pair.Value.Free;
-  FScopedInstances.Free;
+  if Assigned(FScopedInstances) then
+  begin
+    for ScopedPair in FScopedInstances do
+      if Assigned(ScopedPair.Value) then
+        ScopedPair.Value.Free;
+    FScopedInstances.Free;
+  end;
 
-  FDescriptors.Free;
+  if Assigned(FScopedInterfaces) then
+    FScopedInterfaces.Free;
+
+  FLock.Free;
+  
+  if FIsRootProvider then
+    FDescriptors.Free;
+
   inherited Destroy;
+end;
+
+function TDextServiceProvider.CreateScope: IInterface;
+var
+  ScopedProvider: IServiceProvider;
+begin
+  ScopedProvider := TDextServiceProvider.CreateScoped(Self, FDescriptors);
+  Result := TDextServiceScope.Create(ScopedProvider);
 end;
 
 function TDextServiceProvider.FindDescriptor(const AServiceType: TServiceType): TServiceDescriptor;
@@ -181,7 +235,6 @@ begin
   if Assigned(ADescriptor.Factory) then
     Result := ADescriptor.Factory(Self)
   else
-    // Resolução via TActivator (suporta injeção de dependência no construtor)
     Result := TActivator.CreateInstance(Self, ADescriptor.ImplementationClass);
 end;
 
@@ -189,71 +242,150 @@ function TDextServiceProvider.GetService(const AServiceType: TServiceType): TObj
 var
   Descriptor: TServiceDescriptor;
   Key: string;
+  Instance: TObject;
 begin
-  Key := AServiceType.ToString;
   Descriptor := FindDescriptor(AServiceType);
   if not Assigned(Descriptor) then
     Exit(nil);
 
-  case Descriptor.Lifetime of
-    TServiceLifetime.Singleton:
-    begin
-      if not FSingletons.TryGetValue(Key, Result) then
+  Key := AServiceType.ToString;
+
+  FLock.Enter;
+  try
+    case Descriptor.Lifetime of
+      TServiceLifetime.Singleton:
+      begin
+        // Singletons are only created in the root provider
+        if FIsRootProvider then
+        begin
+          if not FSingletons.TryGetValue(Key, Instance) then
+          begin
+            Instance := CreateInstance(Descriptor);
+            FSingletons.Add(Key, Instance);
+          end;
+          Result := Instance;
+        end
+        else
+        begin
+          // Delegate to parent
+          Result := FParentProvider.GetService(AServiceType);
+        end;
+      end;
+
+      TServiceLifetime.Scoped:
+      begin
+        if not FScopedInstances.TryGetValue(Key, Instance) then
+        begin
+          Instance := CreateInstance(Descriptor);
+          FScopedInstances.Add(Key, Instance);
+        end;
+        Result := Instance;
+      end;
+
+      TServiceLifetime.Transient:
       begin
         Result := CreateInstance(Descriptor);
-        FSingletons.Add(Key, Result);
       end;
+    else
+      Result := nil;
     end;
-
-    TServiceLifetime.Transient:
-    begin
-      Result := CreateInstance(Descriptor);
-    end;
-
-    TServiceLifetime.Scoped:
-    begin
-      if not FScopedInstances.TryGetValue(AServiceType, Result) then
-      begin
-        Result := CreateInstance(Descriptor);
-        FScopedInstances.Add(AServiceType, Result);
-      end;
-    end;
-  else
-    Result := nil;
+  finally
+    FLock.Leave;
   end;
 end;
 
 function TDextServiceProvider.GetServiceAsInterface(const AServiceType: TServiceType): IInterface;
 var
+  Descriptor: TServiceDescriptor;
   Key: string;
-  Instance: TObject;
-  InterfaceInstance: IInterface;
+  Intf: IInterface;
+  Obj: TObject;
 begin
+  Descriptor := FindDescriptor(AServiceType);
+  if not Assigned(Descriptor) then
+    Exit(nil);
+
   Key := AServiceType.ToString;
 
-  // ✅ PRIMEIRO: Tentar buscar da cache de interfaces
-  if FSingletonInterfaces.TryGetValue(Key, Result) then
-    Exit;
+  FLock.Enter;
+  try
+    case Descriptor.Lifetime of
+      TServiceLifetime.Singleton:
+      begin
+        if FIsRootProvider then
+        begin
+          if not FSingletonInterfaces.TryGetValue(Key, Intf) then
+          begin
+            Obj := CreateInstance(Descriptor);
+            if not Supports(Obj, AServiceType.AsInterface, Intf) then
+            begin
+              Obj.Free;
+              raise EDextDIException.CreateFmt('Service %s does not implement interface %s',
+                [Obj.ClassName, GUIDToString(AServiceType.AsInterface)]);
+            end;
+            FSingletonInterfaces.Add(Key, Intf);
+          end;
+          Result := Intf;
+        end
+        else
+        begin
+          Result := FParentProvider.GetServiceAsInterface(AServiceType);
+        end;
+      end;
 
-  // ✅ SEGUNDO: Buscar do container e converter para interface
-  Instance := GetService(AServiceType);
+      TServiceLifetime.Scoped:
+      begin
+        if not FScopedInterfaces.TryGetValue(Key, Intf) then
+        begin
+          Obj := CreateInstance(Descriptor);
+          if not Supports(Obj, AServiceType.AsInterface, Intf) then
+          begin
+            Obj.Free;
+            raise EDextDIException.CreateFmt('Service %s does not implement interface %s',
+              [Obj.ClassName, GUIDToString(AServiceType.AsInterface)]);
+          end;
+          FScopedInterfaces.Add(Key, Intf);
+        end;
+        Result := Intf;
+      end;
 
-  if Assigned(Instance) and Instance.GetInterface(AServiceType.AsInterface, InterfaceInstance) then
-  begin
-    // ✅ ARMAZENAR a interface (não apenas o objeto)
-    FSingletonInterfaces.Add(Key, InterfaceInstance);
-    Result := InterfaceInstance;
-  end
-  else
-    Result := nil;
+      TServiceLifetime.Transient:
+      begin
+        Obj := CreateInstance(Descriptor);
+        if not Supports(Obj, AServiceType.AsInterface, Intf) then
+        begin
+          Obj.Free;
+          raise EDextDIException.CreateFmt('Service %s does not implement interface %s',
+            [Obj.ClassName, GUIDToString(AServiceType.AsInterface)]);
+        end;
+        Result := Intf;
+      end;
+    else
+      Result := nil;
+    end;
+  finally
+    FLock.Leave;
+  end;
 end;
-
 
 function TDextServiceProvider.GetRequiredService(const AServiceType: TServiceType): TObject;
 begin
   Result := GetService(AServiceType);
   if not Assigned(Result) then
-    raise EDextDIException.Create('Service not registered');
+    raise EDextDIException.CreateFmt('Required service not found: %s', [AServiceType.ToString]);
+end;
+
+{ TDextServiceScope }
+
+constructor TDextServiceScope.Create(AServiceProvider: IServiceProvider);
+begin
+  inherited Create;
+  FServiceProvider := AServiceProvider;
+end;
+
+function TDextServiceScope.GetServiceProvider: IServiceProvider;
+begin
+  Result := FServiceProvider;
 end;
 
 end.

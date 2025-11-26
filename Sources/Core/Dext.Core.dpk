@@ -86,7 +86,8 @@ contains
   Dext.OpenAPI.Attributes in 'Dext.OpenAPI.Attributes.pas',
   Dext.RateLimiting.Policy in 'Dext.RateLimiting.Policy.pas',
   Dext.RateLimiting.Limiters in 'Dext.RateLimiting.Limiters.pas',
-  Dext.RateLimiting.Core in 'Dext.RateLimiting.Core.pas';
+  Dext.RateLimiting.Core in 'Dext.RateLimiting.Core.pas',
+  Dext.DI.Middleware in 'Dext.DI.Middleware.pas';
 
 end.
 

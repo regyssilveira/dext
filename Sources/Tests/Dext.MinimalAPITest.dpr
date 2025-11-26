@@ -5,24 +5,25 @@
 uses
   System.SysUtils,
   System.IOUtils,
-  Dext.DI.Interfaces,
-  Dext.DI.Extensions,
-  Dext.Http.Interfaces,
-  Dext.WebHost,
+  Dext.Caching,
   Dext.Core.ApplicationBuilder.Extensions,
   Dext.Core.HandlerInvoker,
-  Dext.Http.Results,
-  Dext.Caching,
-  Dext.Validation,
-  Dext.Logging,
-  Dext.Logging.Extensions,
+  Dext.DI.Extensions,
+  Dext.DI.Interfaces,
+  Dext.DI.Middleware,
+  Dext.Http.Interfaces,
   Dext.Http.Middleware,
   Dext.Http.Middleware.Extensions,
+  Dext.Http.Results,
+  Dext.Http.StaticFiles,
+  Dext.Logging,
+  Dext.Logging.Extensions,
+  Dext.OpenAPI.Generator,
   Dext.RateLimiting,
   Dext.RateLimiting.Policy,
-  Dext.Http.StaticFiles,
   Dext.Swagger.Middleware,
-  Dext.OpenAPI.Generator;
+  Dext.Validation,
+  Dext.WebHost;
 
 {$R *.res}
 
@@ -70,6 +71,34 @@ begin
   Result := True;
 end;
 
+type
+  // Scoped service example
+  IRequestContext = interface
+    ['{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}']
+    function GetRequestId: string;
+    property RequestId: string read GetRequestId;
+  end;
+
+  TRequestContext = class(TInterfacedObject, IRequestContext)
+  private
+    FRequestId: string;
+  public
+    constructor Create;
+    function GetRequestId: string;
+  end;
+
+constructor TRequestContext.Create;
+begin
+  inherited;
+  FRequestId := TGUID.NewGuid.ToString;
+  WriteLn('[Scoped] New RequestContext: ' + FRequestId);
+end;
+
+function TRequestContext.GetRequestId: string;
+begin
+  Result := FRequestId;
+end;
+
 begin
   try
     WriteLn('Dext Minimal API - Complete Feature Demo');
@@ -95,6 +124,7 @@ begin
 
         TServiceCollectionExtensions.AddSingleton<ILoggerFactory, TLoggerFactory>(Services);
         TServiceCollectionExtensions.AddSingleton<IUserService, TUserService>(Services);
+        TServiceCollectionExtensions.AddScoped<IRequestContext, TRequestContext>(Services);
 
         // Add Logging
         TServiceCollectionLoggingExtensions.AddLogging(Services,
@@ -104,14 +134,18 @@ begin
             Builder.SetMinimumLevel(TLogLevel.Information);
           end);
 
-        WriteLn('  IUserService registered');
-        WriteLn('  Logging registered');
+        WriteLn('  IUserService registered as Singleton');
+        WriteLn('  Logging registered as Singleton');
+        WriteLn('  IRequestContext registered as SCOPED');
         WriteLn;
       end)
       .Configure(procedure(App: IApplicationBuilder)
       begin
         // 1. Exception Handler (First to catch everything)
         TApplicationBuilderMiddlewareExtensions.UseExceptionHandler(App);
+
+        TApplicationBuilderScopeExtensions.UseServiceScope(App);
+        WriteLn('  Service Scope middleware added');
         
         // 2. Rate Limiting (NEW: Advanced rate limiting)
         WriteLn('Configuring Rate Limiting:');
@@ -277,6 +311,18 @@ begin
             raise Exception.Create('This is a test exception to verify the Exception Handler Middleware');
           end
         );
+
+        WriteLn('10. GET /api/request-context (Test Scoped Services)');
+        TApplicationBuilderExtensions.MapGetR<IRequestContext, IResult>(
+          App,
+          '/api/request-context',
+          function(Ctx: IRequestContext): IResult
+          begin
+            WriteLn('  Request ID: ' + Ctx.RequestId);
+            Result := Results.Json(Format('{"requestId":"%s","message":"Each request gets a unique ID"}',
+              [Ctx.RequestId]));
+          end
+        );
       end)
       .Build;
 
@@ -300,6 +346,7 @@ begin
     WriteLn('curl -v http://localhost:8080/api/error');
     WriteLn('curl http://localhost:8080/index.html');
     WriteLn('curl http://localhost:8080/swagger');
+    WriteLn('curl http://localhost:8080/api/request-context');
     WriteLn;
     WriteLn('Press Enter to stop the server...');
     WriteLn;

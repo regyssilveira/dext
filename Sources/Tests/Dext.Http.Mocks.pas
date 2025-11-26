@@ -77,9 +77,13 @@ type
 
     // IHttpContext
     function GetRequest: IHttpRequest;
+
     function GetResponse: IHttpResponse;
     procedure SetResponse(const AValue: IHttpResponse);
+
     function GetServices: IServiceProvider; virtual;
+    procedure SetServices(const AValue: IServiceProvider);
+
     function GetUser: IClaimsPrincipal;
     procedure SetUser(const AValue: IClaimsPrincipal);
 
@@ -353,6 +357,11 @@ begin
       Writeln('❌ ERROR in SetRouteParams: ', E.Message);
     end;
   end;
+end;
+
+procedure TMockHttpContext.SetServices(const AValue: IServiceProvider);
+begin
+  FServices := AValue;
 end;
 
 //procedure TMockHttpContext.SetRouteParams(const AParams: TDictionary<string, string>);
