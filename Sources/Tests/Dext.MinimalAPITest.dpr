@@ -4,6 +4,7 @@
 
 uses
   System.SysUtils,
+  System.IOUtils,
   Dext.DI.Interfaces,
   Dext.DI.Extensions,
   Dext.Http.Interfaces,
@@ -17,7 +18,8 @@ uses
   Dext.Logging.Extensions,
   Dext.Http.Middleware,
   Dext.Http.Middleware.Extensions,
-  Dext.RateLimiting;
+  Dext.RateLimiting,
+  Dext.Http.StaticFiles;
 
 {$R *.res}
 
@@ -71,6 +73,18 @@ begin
     WriteLn('============================================');
     WriteLn;
 
+    // Setup Static Files for testing
+    var WwwRoot := TPath.Combine(ExtractFilePath(ParamStr(0)), 'wwwroot');
+    if not DirectoryExists(WwwRoot) then
+      ForceDirectories(WwwRoot);
+      
+    var IndexHtml := TPath.Combine(WwwRoot, 'index.html');
+    if not FileExists(IndexHtml) then
+      TFile.WriteAllText(IndexHtml, '<html><body><h1>Hello from Static File!</h1></body></html>');
+      
+    WriteLn('Created static file at: ' + IndexHtml);
+    WriteLn;
+
     var Host := TDextWebHost.CreateDefaultBuilder
       .ConfigureServices(procedure(Services: IServiceCollection)
       begin
@@ -106,6 +120,9 @@ begin
         
         // 4. Response Cache
         TApplicationBuilderCacheExtensions.UseResponseCache(App, 10);
+        
+        // 5. Static Files
+        TApplicationBuilderStaticFilesExtensions.UseStaticFiles(App);
         
         WriteLn('Configuring routes...');
         WriteLn;
@@ -239,6 +256,7 @@ begin
     WriteLn('curl http://localhost:8080/api/health');
     WriteLn('curl -v http://localhost:8080/api/cached');
     WriteLn('curl -v http://localhost:8080/api/error');
+    WriteLn('curl http://localhost:8080/index.html');
     WriteLn;
     WriteLn('Press Enter to stop the server...');
     WriteLn;
