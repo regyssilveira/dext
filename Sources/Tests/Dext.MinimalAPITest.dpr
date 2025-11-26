@@ -19,6 +19,7 @@ uses
   Dext.Http.Middleware,
   Dext.Http.Middleware.Extensions,
   Dext.RateLimiting,
+  Dext.RateLimiting.Policy,
   Dext.Http.StaticFiles,
   Dext.Swagger.Middleware,
   Dext.OpenAPI.Generator;
@@ -112,10 +113,42 @@ begin
         // 1. Exception Handler (First to catch everything)
         TApplicationBuilderMiddlewareExtensions.UseExceptionHandler(App);
         
-        // 2. Rate Limiting (Protect resources)
-        // Limit: 5 requests per 10 seconds
+        // 2. Rate Limiting (NEW: Advanced rate limiting)
+        WriteLn('Configuring Rate Limiting:');
+        WriteLn('  - Fixed Window: 100 req/min per IP');
+        WriteLn('  - Global Limit: 1000 concurrent requests');
+        WriteLn;
+        
         TApplicationBuilderRateLimitExtensions.UseRateLimiting(App, 
-          TRateLimitPolicy.Create(5, 10));
+          TRateLimitPolicy.FixedWindow(100, 60)
+            .WithPartitionByIp
+            .WithGlobalLimit(1000));
+        
+        // Alternative examples (commented):
+        
+        // Sliding Window (more precise):
+        // TApplicationBuilderRateLimitExtensions.UseRateLimiting(App, 
+        //   TRateLimitPolicy.SlidingWindow(50, 60)
+        //     .WithPartitionByIp);
+        
+        // Token Bucket (allows bursts):
+        // TApplicationBuilderRateLimitExtensions.UseRateLimiting(App, 
+        //   TRateLimitPolicy.TokenBucket(50, 10)  // 50 tokens, refill 10/sec
+        //     .WithPartitionByHeader('X-API-Key'));
+        
+        // Concurrency Limit:
+        // TApplicationBuilderRateLimitExtensions.UseRateLimiting(App, 
+        //   TRateLimitPolicy.Concurrency(100)
+        //     .WithPartitionByRoute);
+        
+        // Custom Partition:
+        // TApplicationBuilderRateLimitExtensions.UseRateLimiting(App, 
+        //   TRateLimitPolicy.FixedWindow(10, 60)
+        //     .WithPartitionKey(function(Ctx: IHttpContext): string
+        //       begin
+        //         Result := Ctx.Request.RemoteIpAddress + '_' + 
+        //                   Ctx.Request.Headers.Values['User-Agent'];
+        //       end));
         
         // 3. HTTP Logging
         TApplicationBuilderMiddlewareExtensions.UseHttpLogging(App);
@@ -165,9 +198,6 @@ begin
           '/api/users',
           function(Request: TCreateUserRequest): IResult
           begin
-            // Note: Validation is now handled automatically by the framework.
-            // If we reach here, the Request is valid!
-            
             WriteLn(Format('  Creating user: %s <%s>, Age: %d', 
               [Request.Name, Request.Email, Request.Age]));
             
@@ -253,6 +283,9 @@ begin
     WriteLn('===========================================');
     WriteLn('Server running on http://localhost:8080');
     WriteLn('===========================================');
+    WriteLn;
+    WriteLn('Rate Limiting Examples:');
+    WriteLn('  Fixed Window: 100 req/min per IP + 1000 global concurrent');
     WriteLn;
     WriteLn('Test Commands:');
     WriteLn;

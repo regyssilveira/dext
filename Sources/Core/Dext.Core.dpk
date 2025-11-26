@@ -83,7 +83,10 @@ contains
   Dext.Swagger.Middleware in 'Dext.Swagger.Middleware.pas',
   Dext.OpenAPI.Generator in 'Dext.OpenAPI.Generator.pas',
   Dext.OpenAPI.Types in 'Dext.OpenAPI.Types.pas',
-  Dext.OpenAPI.Attributes in 'Dext.OpenAPI.Attributes.pas';
+  Dext.OpenAPI.Attributes in 'Dext.OpenAPI.Attributes.pas',
+  Dext.RateLimiting.Policy in 'Dext.RateLimiting.Policy.pas',
+  Dext.RateLimiting.Limiters in 'Dext.RateLimiting.Limiters.pas',
+  Dext.RateLimiting.Core in 'Dext.RateLimiting.Core.pas';
 
 end.
 

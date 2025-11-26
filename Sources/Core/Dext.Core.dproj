@@ -156,6 +156,9 @@
         <DCCReference Include="Dext.OpenAPI.Generator.pas"/>
         <DCCReference Include="Dext.OpenAPI.Types.pas"/>
         <DCCReference Include="Dext.OpenAPI.Attributes.pas"/>
+        <DCCReference Include="Dext.RateLimiting.Policy.pas"/>
+        <DCCReference Include="Dext.RateLimiting.Limiters.pas"/>
+        <DCCReference Include="Dext.RateLimiting.Core.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
