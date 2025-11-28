@@ -48,6 +48,15 @@ type
     function Find(const AId: Variant): T; overload;
     function Find(const AId: array of Integer): T; overload;
 
+    procedure AddRange(const AEntities: TArray<T>); overload;
+    procedure AddRange(const AEntities: TEnumerable<T>); overload;
+    
+    procedure UpdateRange(const AEntities: TArray<T>); overload;
+    procedure UpdateRange(const AEntities: TEnumerable<T>); overload;
+    
+    procedure RemoveRange(const AEntities: TArray<T>); overload;
+    procedure RemoveRange(const AEntities: TEnumerable<T>); overload;
+
     function List(const ASpec: ISpecification<T>): TList<T>; overload;
     function List: TList<T>; overload;
     function FirstOrDefault(const ASpec: ISpecification<T>): T;
@@ -563,79 +572,106 @@ var
   ParamsToSet: TList<TPair<string, TValue>>;
   //PKVal: string;
 begin
-  SB := TStringBuilder.Create;
-  Cols := TStringBuilder.Create;
-  Vals := TStringBuilder.Create;
-  ParamsToSet := TList<TPair<string, TValue>>.Create;
   try
-    SB.Append('INSERT INTO ').Append(GetTableName).Append(' (');
-    
-    var First := True;
-    
-    for Pair in FColumns do
-    begin
-      Prop := FProps[Pair.Value.ToLower];
+    SB := TStringBuilder.Create;
+    Cols := TStringBuilder.Create;
+    Vals := TStringBuilder.Create;
+    ParamsToSet := TList<TPair<string, TValue>>.Create;
+    try
+      SB.Append('INSERT INTO ').Append(GetTableName).Append(' (');
       
-      // Check for AutoInc (skip PK if autoinc)
-      IsAutoInc := False;
-      var IsFK := False;
+      var First := True;
       
-      for var Attr in Prop.GetAttributes do
+      for Pair in FColumns do
       begin
-        if Attr is AutoIncAttribute then IsAutoInc := True;
-        if Attr is ForeignKeyAttribute then IsFK := True;
-      end;
+        try
+          Prop := FProps[Pair.Value.ToLower];
           
-      if IsAutoInc then Continue;
-      
-      if not First then
-      begin
-        Cols.Append(', ');
-        Vals.Append(', ');
+          // Check for AutoInc (skip PK if autoinc)
+          IsAutoInc := False;
+          var IsFK := False;
+          
+          for var Attr in Prop.GetAttributes do
+          begin
+            if Attr is AutoIncAttribute then IsAutoInc := True;
+            if Attr is ForeignKeyAttribute then IsFK := True;
+          end;
+              
+          if IsAutoInc then Continue;
+          
+          if not First then
+          begin
+            Cols.Append(', ');
+            Vals.Append(', ');
+          end;
+          First := False;
+          
+          Cols.Append(FContext.Dialect.QuoteIdentifier(Pair.Value));
+          
+          ParamName := 'p_' + Pair.Value;
+          Vals.Append(':').Append(ParamName);
+          
+          Val := Prop.GetValue(Pointer(AEntity));
+          
+          if IsFK then
+          begin
+            // Extract ID from related object
+            if Val.IsObject and (Val.AsObject <> nil) then
+              Val := GetRelatedId(Val.AsObject)
+            else
+              Val := TValue.Empty; // NULL
+          end;
+          
+          ParamsToSet.Add(TPair<string, TValue>.Create(ParamName, Val));
+        except
+          on E: Exception do
+            raise Exception.CreateFmt('Error processing property "%s": %s', [Pair.Value, E.Message]);
+        end;
       end;
-      First := False;
       
-      Cols.Append(FContext.Dialect.QuoteIdentifier(Pair.Value));
+      SB.Append(Cols.ToString).Append(') VALUES (').Append(Vals.ToString).Append(')');
       
-      ParamName := 'p_' + Pair.Value;
-      Vals.Append(':').Append(ParamName);
+      var CmdIntf := FContext.Connection.CreateCommand(SB.ToString);
+      if not Supports(CmdIntf, StringToGUID('{20000000-0000-0000-0000-000000000004}'), Cmd) then
+        raise Exception.Create('Failed to create IDbCommand');
       
-      Val := Prop.GetValue(Pointer(AEntity));
-      
-      if IsFK then
-      begin
-        // Extract ID from related object
-        if Val.IsObject and (Val.AsObject <> nil) then
-          Val := GetRelatedId(Val.AsObject)
-        else
-          Val := TValue.Empty; // NULL
+      try
+        for var P in ParamsToSet do
+          Cmd.AddParam(P.Key, P.Value);
+      except
+        on E: Exception do
+          raise Exception.CreateFmt('Error adding params to command: %s', [E.Message]);
+      end;
+        
+      try
+        Cmd.ExecuteNonQuery;
+      except
+        on E: Exception do
+          raise Exception.CreateFmt('Error executing insert SQL: %s', [E.Message]);
       end;
       
-      ParamsToSet.Add(TPair<string, TValue>.Create(ParamName, Val));
+      // TODO: If AutoInc, fetch ID back and update Entity?
+      // For now, if user provided ID, we can cache it.
+      // If AutoInc, we don't know ID yet, so we can't cache it easily unless we fetch it.
+      // Let's skip adding to cache on Add for now to avoid complexity with AutoInc.
+      // The user has the instance anyway.
+      
+    finally
+      SB.Free;
+      Cols.Free;
+      Vals.Free;
+      ParamsToSet.Free;
     end;
-    
-    SB.Append(Cols.ToString).Append(') VALUES (').Append(Vals.ToString).Append(')');
-    
-    var CmdIntf := FContext.Connection.CreateCommand(SB.ToString);
-    if not Supports(CmdIntf, StringToGUID('{20000000-0000-0000-0000-000000000004}'), Cmd) then
-      raise Exception.Create('Failed to create IDbCommand');
-    
-    for var P in ParamsToSet do
-      Cmd.AddParam(P.Key, P.Value);
-      
-    Cmd.ExecuteNonQuery;
-    
-    // TODO: If AutoInc, fetch ID back and update Entity?
-    // For now, if user provided ID, we can cache it.
-    // If AutoInc, we don't know ID yet, so we can't cache it easily unless we fetch it.
-    // Let's skip adding to cache on Add for now to avoid complexity with AutoInc.
-    // The user has the instance anyway.
-    
-  finally
-    SB.Free;
-    Cols.Free;
-    Vals.Free;
-    ParamsToSet.Free;
+  except
+    on E: Exception do
+    begin
+      var F: TextFile;
+      AssignFile(F, 'c:\dev\Dext\error.log');
+      if FileExists('c:\dev\Dext\error.log') then Append(F) else Rewrite(F);
+      Writeln(F, 'CRITICAL ERROR in TDbSet.Add: ' + E.Message);
+      CloseFile(F);
+      raise Exception.CreateFmt('CRITICAL ERROR in TDbSet.Add: %s', [E.Message]);
+    end;
   end;
 end;
 
@@ -686,7 +722,7 @@ begin
     end;
     
     Cmd := IDbCommand(FContext.Connection.CreateCommand(SB.ToString));
-    
+
     // Bind Params (Update fields)
     for Pair in FColumns do
     begin
@@ -694,7 +730,7 @@ begin
       
       Prop := FProps[Pair.Value.ToLower];
       Val := Prop.GetValue(Pointer(AEntity));
-      
+
       // Check for FK
       var IsFK := False;
       for var Attr in Prop.GetAttributes do
@@ -707,7 +743,7 @@ begin
         else
           Val := TValue.Empty;
       end;
-      
+
       Cmd.AddParam('p_' + Pair.Value, Val);
     end;
     
@@ -767,6 +803,119 @@ begin
       FIdentityMap.ExtractPair(Id); // Extract so we don't free the instance we are holding
   finally
     SB.Free;
+  end;
+end;
+
+procedure TDbSet<T>.AddRange(const AEntities: TArray<T>);
+var
+  Entity: T;
+  OwnTransaction: Boolean;
+begin
+  OwnTransaction := not FContext.InTransaction;
+  if OwnTransaction then FContext.BeginTransaction;
+  try
+    for Entity in AEntities do
+      Add(Entity);
+      
+    if OwnTransaction then FContext.Commit;
+  except
+    if OwnTransaction then FContext.Rollback;
+    raise;
+  end;
+end;
+
+procedure TDbSet<T>.AddRange(const AEntities: TEnumerable<T>);
+var
+  Entity: T;
+  OwnTransaction: Boolean;
+begin
+  try
+    OwnTransaction := not FContext.InTransaction;
+    if OwnTransaction then FContext.BeginTransaction;
+    try
+      for Entity in AEntities do
+        Add(Entity);
+        
+      if OwnTransaction then FContext.Commit;
+    except
+      if OwnTransaction then FContext.Rollback;
+      raise;
+    end;
+  except
+    on E: Exception do
+      raise Exception.CreateFmt('CRITICAL ERROR in AddRange: %s', [E.Message]);
+  end;
+end;
+
+procedure TDbSet<T>.UpdateRange(const AEntities: TArray<T>);
+var
+  Entity: T;
+  OwnTransaction: Boolean;
+begin
+  OwnTransaction := not FContext.InTransaction;
+  if OwnTransaction then FContext.BeginTransaction;
+  try
+    for Entity in AEntities do
+      Update(Entity);
+      
+    if OwnTransaction then FContext.Commit;
+  except
+    if OwnTransaction then FContext.Rollback;
+    raise;
+  end;
+end;
+
+procedure TDbSet<T>.UpdateRange(const AEntities: TEnumerable<T>);
+var
+  Entity: T;
+  OwnTransaction: Boolean;
+begin
+  OwnTransaction := not FContext.InTransaction;
+  if OwnTransaction then FContext.BeginTransaction;
+  try
+    for Entity in AEntities do
+      Update(Entity);
+      
+    if OwnTransaction then FContext.Commit;
+  except
+    if OwnTransaction then FContext.Rollback;
+    raise;
+  end;
+end;
+
+procedure TDbSet<T>.RemoveRange(const AEntities: TArray<T>);
+var
+  Entity: T;
+  OwnTransaction: Boolean;
+begin
+  OwnTransaction := not FContext.InTransaction;
+  if OwnTransaction then FContext.BeginTransaction;
+  try
+    for Entity in AEntities do
+      Remove(Entity);
+      
+    if OwnTransaction then FContext.Commit;
+  except
+    if OwnTransaction then FContext.Rollback;
+    raise;
+  end;
+end;
+
+procedure TDbSet<T>.RemoveRange(const AEntities: TEnumerable<T>);
+var
+  Entity: T;
+  OwnTransaction: Boolean;
+begin
+  OwnTransaction := not FContext.InTransaction;
+  if OwnTransaction then FContext.BeginTransaction;
+  try
+    for Entity in AEntities do
+      Remove(Entity);
+      
+    if OwnTransaction then FContext.Commit;
+  except
+    if OwnTransaction then FContext.Rollback;
+    raise;
   end;
 end;
 

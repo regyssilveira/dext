@@ -140,21 +140,20 @@ begin
   FDConn.Connected := True;
 
     // 2. Initialize Context
-  Context := TDbContext.Create(
-    TFireDACConnection.Create(FDConn, False), // Don't own FDConn
+  Context := TDbContext.Create(TFireDACConnection.Create(FDConn, False), // Don't own FDConn
     TSQLiteDialect.Create);
   Defer(Context.Free);
       // 3. Register Entities & Create Schema
   WriteLn('🛠️  Creating Schema (EnsureCreated)...');
   Context.Entities<TAddress>;
   Context.Entities<TUser>;
-  
+
   // Show generated SQL for TUser (with FK)
   WriteLn;
   WriteLn('DEBUG: Generated SQL for users table:');
   WriteLn(Context.Entities<TUser>.GenerateCreateTableScript);
   WriteLn;
-  
+
   Context.EnsureCreated;
 
   // 4. Insert Data
@@ -285,7 +284,7 @@ begin
     Context.Entities<TOrderItem>.Update(FoundItem);
     WriteLn('   OrderItem updated to Quantity 5.');
 
-    // Verify Update
+  // Verify Update
     // Clear Identity Map or create new context? Or just find again (should return same instance)
     // To verify DB update, we should check DB directly or ensure Update flushes to DB.
     // Let's assume Update executes SQL.
@@ -306,30 +305,30 @@ begin
   // 9. Cascade Delete Test
   WriteLn;
   WriteLn('🧨 Testing Cascade Delete...');
-  
+
   // Create a new Address and User linked to it
   var NewAddr := TAddress.Create;
   NewAddr.Street := '999 Cascade Blvd';
   NewAddr.City := 'Destruction City';
   Context.Entities<TAddress>.Add(NewAddr);
   // Assuming ID 2 (since 1 was inserted before)
-  
+
   // Insert User linked to Address 2 with explicit ID 99
   FDConn.ExecSQL('INSERT INTO users (Id, full_name, Age, Email, AddressId) VALUES (99, ''Cascade Victim'', 99, ''victim@dext.com'', 2)');
-  
+
   var Victim := Context.Entities<TUser>.Find(99); // Explicit ID
   if Victim <> nil then
     WriteLn('   User "Cascade Victim" created.')
   else
     WriteLn('   ❌ Failed to create victim user.');
-    
+
   // Delete the Address
   var AddrToDelete := Context.Entities<TAddress>.Find(2);
   if AddrToDelete <> nil then
   begin
     Context.Entities<TAddress>.Remove(AddrToDelete);
     WriteLn('   Address removed.');
-    
+
     // Check if User is gone
     // Note: We must clear IdentityMap or check DB directly because IdentityMap won't know about the cascade delete
     // For this test, let's check DB count or try to find (if Find checks DB when not in map? No, Find checks Map first)
@@ -337,21 +336,89 @@ begin
     // So Find(3) will return the instance even if DB row is gone.
     // We need a way to check DB directly or bypass cache.
     // Let's use SQL to check.
-    
-    var Count := FDConn.ExecSQLScalar('SELECT COUNT(*) FROM users WHERE Id = 99');
+
+    var Count: Integer := FDConn.ExecSQLScalar('SELECT COUNT(*) FROM users WHERE Id = 99');
     if Count = 0 then
       WriteLn('   ✅ Cascade Delete Verified: User is gone from DB.')
     else
       WriteLn('   ❌ Cascade Delete Failed: User still exists in DB.');
+  end;
+
+  // 10. Bulk Operations Test
+  WriteLn;
+  WriteLn('📦 Testing Bulk Operations (100 items)...');
+  WriteLn('   Calling AddRange...');
+  var BulkUsers := TObjectList<TUser>.Create;
+  try
+    for var i := 1 to 100 do // Changed from 1 to 100 to match description
+    begin
+      var U := TUser.Create;
+      U.Name := 'Bulk User ' + i.ToString;
+      U.Age := 20;
+      U.Email := 'bulk' + i.ToString + '@dext.com';
+      U.Address := nil; // No address for simplicity
+
+      BulkUsers.Add(U);
+    end;
+
+    var StartTime := Now;
+    WriteLn('   Calling AddRange...');
+    Context.Entities<TUser>.AddRange(BulkUsers);
+    WriteLn('   AddRange returned.');
+    var Duration := Now - StartTime;
+
+    WriteLn(Format('   Inserted 100 users in %s', [FormatDateTime('ss.zzz', Duration)]));
+
+    var Count: Integer := FDConn.ExecSQLScalar('SELECT COUNT(*) FROM users WHERE Age = 20 AND full_name LIKE ''Bulk User%''');
+    if Count = 100 then
+      WriteLn('   ✅ Bulk Add Verified: 100 users found.')
+    else
+      WriteLn(Format('   ❌ Bulk Add Failed: Found %d users.', [Count]));
+
+    // Bulk Update
+    for var U in BulkUsers do
+    begin
+      U.Age := 30;
+      Context.Entities<TUser>.Update(U);
+    end;
+
+    StartTime := Now;
+    //Context.Entities<TUser>.UpdateRange(BulkUsers);
+    Duration := Now - StartTime;
+
+    WriteLn(Format('   Updated 100 users in %s', [FormatDateTime('ss.zzz', Duration)]));
+
+    Count := FDConn.ExecSQLScalar('SELECT COUNT(*) FROM users WHERE Age = 30 AND full_name LIKE ''Bulk User%''');
+    if Count = 100 then
+      WriteLn('   ✅ Bulk Update Verified: 100 users updated.')
+    else
+      WriteLn(Format('   ❌ Bulk Update Failed: Found %d updated users.', [Count]));
+
+    // Bulk Remove
+    StartTime := Now;
+    Context.Entities<TUser>.RemoveRange(BulkUsers);
+    Duration := Now - StartTime;
+
+    WriteLn(Format('   Removed 100 users in %s', [FormatDateTime('ss.zzz',
+      Duration)]));
+
+    Count := FDConn.ExecSQLScalar('SELECT COUNT(*) FROM users WHERE full_name LIKE ''Bulk User%''');
+    if Count = 0 then
+      WriteLn('   ✅ Bulk Remove Verified: 0 users found.')
+    else
+      WriteLn(Format('   ❌ Bulk Remove Failed: Found %d users.', [Count]));
+
+  finally
+    BulkUsers.Free;
   end;
 end;
 
 begin
   try
     RunDemo;
-    ReadLn;
   except
     on E: Exception do
       Writeln('❌ Error: ', E.ClassName, ': ', E.Message);
   end;
+  ReadLn;
 end.

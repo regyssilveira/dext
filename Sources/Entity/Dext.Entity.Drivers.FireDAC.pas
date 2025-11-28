@@ -5,6 +5,7 @@ interface
 uses
   System.SysUtils,
   System.Classes,
+  System.Variants,
   System.Rtti,
   System.Generics.Collections,
   Data.DB,
@@ -199,11 +200,23 @@ procedure TFireDACCommand.AddParam(const AName: string; const AValue: TValue);
 var
   Param: TFDParam;
 begin
-  Param := FQuery.ParamByName(AName);
-  if AValue.IsEmpty then
-    Param.Clear
-  else
-    Param.Value := AValue.AsVariant;
+  try
+    Param := FQuery.ParamByName(AName);
+    if AValue.IsEmpty then
+    begin
+      Param.Clear;
+      if Param.DataType = ftUnknown then
+        Param.DataType := ftString; 
+    end
+    else
+      Param.Value := AValue.AsVariant;
+  except
+    on E: Exception do
+    begin
+      Writeln(ErrOutput, Format('CRITICAL ERROR in AddParam(%s): %s', [AName, E.Message]));
+      raise;
+    end;
+  end;
 end;
 
 procedure TFireDACCommand.ClearParams;

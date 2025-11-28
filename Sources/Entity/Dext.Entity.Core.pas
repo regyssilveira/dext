@@ -35,6 +35,16 @@ type
     function Find(const AId: Variant): T; overload;
     function Find(const AId: array of Integer): T; overload;
 
+    // Bulk Operations
+    procedure AddRange(const AEntities: TArray<T>); overload;
+    procedure AddRange(const AEntities: TEnumerable<T>); overload;
+    
+    procedure UpdateRange(const AEntities: TArray<T>); overload;
+    procedure UpdateRange(const AEntities: TEnumerable<T>); overload;
+    
+    procedure RemoveRange(const AEntities: TArray<T>); overload;
+    procedure RemoveRange(const AEntities: TEnumerable<T>); overload;
+
     // Queries via Specifications
     function List(const ASpec: ISpecification<T>): TList<T>; overload;
     function List: TList<T>; overload; // All
@@ -56,6 +66,7 @@ type
     procedure BeginTransaction;
     procedure Commit;
     procedure Rollback;
+    function InTransaction: Boolean;
     
     /// <summary>
     ///   Get a non-generic DbSet for the specified entity type.

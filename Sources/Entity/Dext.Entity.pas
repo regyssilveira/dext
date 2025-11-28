@@ -42,6 +42,7 @@ type
     procedure BeginTransaction;
     procedure Commit;
     procedure Rollback;
+    function InTransaction: Boolean;
     
     /// <summary>
     ///   Access the DbSet for a specific entity type.
@@ -123,6 +124,12 @@ begin
     FTransaction := nil;
   end;
 end;
+
+function TDbContext.InTransaction: Boolean;
+begin
+  Result := FTransaction <> nil;
+end;
+
 
 function TDbContext.DataSet(AEntityType: PTypeInfo): IDbSet;
 var
