@@ -140,7 +140,8 @@ begin
   FDConn.Connected := True;
 
     // 2. Initialize Context
-  Context := TDbContext.Create(TFireDACConnection.Create(FDConn, False), // Don't own FDConn
+  Context := TDbContext.Create(
+    TFireDACConnection.Create(FDConn, False), // Don't own FDConn
     TSQLiteDialect.Create);
   Defer(Context.Free);
       // 3. Register Entities & Create Schema

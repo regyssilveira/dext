@@ -108,7 +108,6 @@ begin
     if not IsMapped then Continue;
     
     ColName := Prop.Name; // Default
-    var IsPK := False;
     
     // First pass: determine column name
     for Attr in Prop.GetAttributes do
@@ -124,10 +123,7 @@ begin
     for Attr in Prop.GetAttributes do
     begin
       if Attr is PKAttribute then
-      begin
         FPKColumns.Add(ColName);
-        IsPK := True;
-      end;
     end;
     
     FProps.Add(ColName.ToLower, Prop); // Store lower for case-insensitive matching
@@ -418,9 +414,9 @@ begin
       ColType := FContext.Dialect.GetColumnType(Prop.PropertyType.Handle, IsAutoInc);
       SB.Append(ColType);
       
-      // Inline PK only if single PK and not composite (or if dialect supports inline composite which is rare)
-      // Actually, let's just use inline for single PK for now to match previous behavior
-      if IsPK and (FPKColumns.Count = 1) and not IsAutoInc then 
+      // Add PRIMARY KEY inline for single PK (including AutoInc)
+      // For SQLite, AutoInc columns should have PRIMARY KEY
+      if IsPK and (FPKColumns.Count = 1) then 
         SB.Append(' PRIMARY KEY');
     end;
     
