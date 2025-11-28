@@ -12,9 +12,19 @@ uses
 
 type
   /// <summary>
+  ///   Non-generic base interface for DbSets.
+  ///   Allows access to DbSet operations without knowing the generic type at compile time.
+  /// </summary>
+  IDbSet = interface
+    ['{30000000-0000-0000-0000-000000000000}']
+    function FindObject(const AId: Variant): TObject;
+    function GenerateCreateTableScript: string;
+  end;
+
+  /// <summary>
   ///   Represents a collection of entities mapped to a database table.
   /// </summary>
-  IDbSet<T: class> = interface
+  IDbSet<T: class> = interface(IDbSet)
     ['{30000000-0000-0000-0000-000000000001}']
     
     // CRUD
@@ -45,8 +55,16 @@ type
     procedure Commit;
     procedure Rollback;
     
-    // Note: Generic factory methods (Entities<T>) are implemented in the concrete class TDbContext
-    // because Delphi interfaces have limited support for generic methods.
+    /// <summary>
+    ///   Get a non-generic DbSet for the specified entity type.
+    /// </summary>
+    function DataSet(AEntityType: PTypeInfo): IDbSet;
+    
+    /// <summary>
+    ///   Ensures that the database schema exists.
+    ///   Creates tables for all registered entities if they don't exist.
+    /// </summary>
+    procedure EnsureCreated;
   end;
 
 implementation

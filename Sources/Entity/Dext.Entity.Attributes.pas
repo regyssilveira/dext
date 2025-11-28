@@ -34,6 +34,17 @@ type
   NotMappedAttribute = class(TCustomAttribute)
   end;
 
+  /// <summary>
+  ///   Marks a property as a Foreign Key relationship.
+  /// </summary>
+  ForeignKeyAttribute = class(TCustomAttribute)
+  private
+    FColumnName: string;
+  public
+    constructor Create(const AColumnName: string);
+    property ColumnName: string read FColumnName;
+  end;
+
 implementation
 
 { TableAttribute }
@@ -48,6 +59,13 @@ end;
 constructor ColumnAttribute.Create(const AName: string);
 begin
   FName := AName;
+end;
+
+{ ForeignKeyAttribute }
+
+constructor ForeignKeyAttribute.Create(const AColumnName: string);
+begin
+  FColumnName := AColumnName;
 end;
 
 end.

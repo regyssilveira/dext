@@ -117,7 +117,8 @@ contains
   Dext.Specifications.Criteria in '..\Specifications\Dext.Specifications.Criteria.pas',
   Dext.Specifications.Interfaces in '..\Specifications\Dext.Specifications.Interfaces.pas',
   Dext.Specifications.SQL.Generator in '..\Specifications\Dext.Specifications.SQL.Generator.pas',
-  Dext.Specifications.Types in '..\Specifications\Dext.Specifications.Types.pas';
+  Dext.Specifications.Types in '..\Specifications\Dext.Specifications.Types.pas',
+  Dext.Core.ValueConverters in 'Dext.Core.ValueConverters.pas';
 
 end.
 

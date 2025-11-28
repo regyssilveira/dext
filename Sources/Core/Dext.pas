@@ -132,15 +132,15 @@ type
   Auto<T: class> = record
   private
     FLifetime: Dext.Core.Memory.ILifetime<T>;
-    function GetValue: T;
+    function GetInstance: T;
   public
     constructor Create(AValue: T);
     
     /// <summary>
     ///   Access the underlying object.
     /// </summary>
-    property Value: T read GetValue;
-    
+    property Instance: T read GetInstance;
+
     /// <summary>
     ///   Implicitly converts the object to Auto&lt;T&gt;.
     /// </summary>
@@ -319,10 +319,11 @@ type
     function Build: TRequestDelegate;
   end;
 
-  /// <summary>
-  ///   Schedules an action to be executed when the returned interface goes out of scope.
-  /// </summary>
-  function Defer(AAction: TProc): IDeferred;
+/// <summary>
+///   Schedules an action to be executed when the returned interface goes out of scope.
+/// </summary>
+function Defer(AAction: TProc): IDeferred; overload;
+function Defer(const AActions: array of TProc): TArray<IDeferred>; overload;
 
 implementation
 
@@ -337,7 +338,7 @@ begin
     FLifetime := nil;
 end;
 
-function Auto<T>.GetValue: T;
+function Auto<T>.GetInstance: T;
 begin
   if FLifetime <> nil then
     Result := FLifetime.GetValue
@@ -352,7 +353,7 @@ end;
 
 class operator Auto<T>.Implicit(const AAuto: Auto<T>): T;
 begin
-  Result := AAuto.Value;
+  Result := AAuto.Instance;
 end;
 
 { TDextServicesHelper }
@@ -391,6 +392,13 @@ end;
 function Defer(AAction: TProc): IDeferred;
 begin
   Result := Dext.Core.Memory.TDeferredAction.Create(AAction);
+end;
+
+function Defer(const AActions: array of TProc): TArray<IDeferred>;
+begin
+  SetLength(Result, Length(AActions));
+  for var i := Low(AActions) to High(AActions) do
+    Result[i] := Dext.Core.Memory.TDeferredAction.Create(AActions[i]);
 end;
 
 { TDextAppBuilderHelper }

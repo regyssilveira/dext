@@ -190,6 +190,7 @@
         <DCCReference Include="..\Specifications\Dext.Specifications.Interfaces.pas"/>
         <DCCReference Include="..\Specifications\Dext.Specifications.SQL.Generator.pas"/>
         <DCCReference Include="..\Specifications\Dext.Specifications.Types.pas"/>
+        <DCCReference Include="Dext.Core.ValueConverters.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

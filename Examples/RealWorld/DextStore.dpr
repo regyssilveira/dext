@@ -44,8 +44,11 @@ begin
       begin
         Cors.AllowAnyOrigin  // Allow all for demo
             .WithMethods(['GET', 'POST', 'PUT', 'DELETE'])
-            .AllowAnyHeader;
+            .AllowAnyHeader
+            .Build;
       end)
+
+
 
       // ✨ JWT Authentication with Fluent API
       .UseJwtAuthentication(JwtSecret,

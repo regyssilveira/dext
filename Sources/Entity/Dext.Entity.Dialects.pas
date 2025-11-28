@@ -3,7 +3,8 @@ unit Dext.Entity.Dialects;
 interface
 
 uses
-  System.SysUtils;
+  System.SysUtils,
+  System.TypInfo;
 
 type
   /// <summary>
@@ -15,6 +16,7 @@ type
     function GetParamPrefix: string;
     function GeneratePaging(ASkip, ATake: Integer): string;
     function BooleanToSQL(AValue: Boolean): string;
+    function GetColumnType(ATypeInfo: PTypeInfo; AIsAutoInc: Boolean = False): string;
   end;
 
   /// <summary>
@@ -26,6 +28,7 @@ type
     function GetParamPrefix: string; virtual;
     function GeneratePaging(ASkip, ATake: Integer): string; virtual; abstract;
     function BooleanToSQL(AValue: Boolean): string; virtual;
+    function GetColumnType(ATypeInfo: PTypeInfo; AIsAutoInc: Boolean = False): string; virtual; abstract;
   end;
 
   /// <summary>
@@ -36,6 +39,7 @@ type
     function QuoteIdentifier(const AName: string): string; override;
     function GeneratePaging(ASkip, ATake: Integer): string; override;
     function BooleanToSQL(AValue: Boolean): string; override;
+    function GetColumnType(ATypeInfo: PTypeInfo; AIsAutoInc: Boolean = False): string; override;
   end;
 
   /// <summary>
@@ -46,6 +50,7 @@ type
     function QuoteIdentifier(const AName: string): string; override;
     function GeneratePaging(ASkip, ATake: Integer): string; override;
     function BooleanToSQL(AValue: Boolean): string; override;
+    function GetColumnType(ATypeInfo: PTypeInfo; AIsAutoInc: Boolean = False): string; override;
   end;
 
 implementation
@@ -87,6 +92,32 @@ begin
   Result := '"' + AName + '"';
 end;
 
+function TSQLiteDialect.GetColumnType(ATypeInfo: PTypeInfo; AIsAutoInc: Boolean): string;
+begin
+  if AIsAutoInc then
+    Exit('INTEGER'); // SQLite AutoInc must be INTEGER PRIMARY KEY
+
+  case ATypeInfo.Kind of
+    tkInteger, tkInt64: Result := 'INTEGER';
+    tkFloat: 
+      begin
+        if ATypeInfo = TypeInfo(TDateTime) then Result := 'REAL' // Or TEXT/INTEGER depending on storage pref
+        else if ATypeInfo = TypeInfo(TDate) then Result := 'REAL'
+        else if ATypeInfo = TypeInfo(TTime) then Result := 'REAL'
+        else Result := 'REAL';
+      end;
+    tkChar, tkString, tkWChar, tkLString, tkWString, tkUString: Result := 'TEXT';
+    tkEnumeration:
+      begin
+        if ATypeInfo = TypeInfo(Boolean) then Result := 'INTEGER' // 0 or 1
+        else Result := 'INTEGER'; // Store Enums as Ints by default
+      end;
+    tkVariant: Result := 'BLOB'; // Fallback
+  else
+    Result := 'TEXT'; // Default fallback
+  end;
+end;
+
 { TPostgreSQLDialect }
 
 function TPostgreSQLDialect.BooleanToSQL(AValue: Boolean): string;
@@ -106,6 +137,33 @@ begin
   // Postgres uses double quotes, but forces lowercase unless quoted.
   // We quote to preserve case sensitivity if needed.
   Result := '"' + AName + '"';
+end;
+
+function TPostgreSQLDialect.GetColumnType(ATypeInfo: PTypeInfo; AIsAutoInc: Boolean): string;
+begin
+  if AIsAutoInc then
+    Exit('SERIAL');
+
+  case ATypeInfo.Kind of
+    tkInteger: Result := 'INTEGER';
+    tkInt64: Result := 'BIGINT';
+    tkFloat: 
+      begin
+        if ATypeInfo = TypeInfo(Double) then Result := 'DOUBLE PRECISION'
+        else if ATypeInfo = TypeInfo(Single) then Result := 'REAL'
+        else if ATypeInfo = TypeInfo(Currency) then Result := 'MONEY'
+        else if ATypeInfo = TypeInfo(TDateTime) then Result := 'TIMESTAMP'
+        else Result := 'DOUBLE PRECISION';
+      end;
+    tkChar, tkString, tkWChar, tkLString, tkWString, tkUString: Result := 'VARCHAR(255)'; // Default length
+    tkEnumeration:
+      begin
+        if ATypeInfo = TypeInfo(Boolean) then Result := 'BOOLEAN'
+        else Result := 'INTEGER';
+      end;
+  else
+    Result := 'TEXT';
+  end;
 end;
 
 end.
