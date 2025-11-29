@@ -128,13 +128,15 @@ Melhorar como os dados relacionados são carregados e gerenciar ciclo de vida da
 ### Expansão Planejada (Baseada em Pesquisa de Mercado Delphi)
 
 #### Prioridade 1 - Crítica (Mercado BR + Prototipagem)
-1. **Firebird 3.0/4.0**
-   - **Segmento**: ERPs Modernos, Mercado BR
-   - **Driver**: FireDAC (TFDPhysFBDriverLink)
-   - **Desafios**: Dialeto SQL, Transações, Generators
-   - **Status**: ❌ Não implementado
+    - **Status**: ❌ Não implementado (Movido para Prioridade 2)
 
-2. **SQLite** ✅
+2. **PostgreSQL** (Promovido a Prioridade 1)
+   - **Segmento**: Microserviços, Cloud, Docker, Uso Diário
+   - **Driver**: FireDAC (TFDPhysPGDriverLink)
+   - **Desafios**: JSONB, Case Sensitivity, Batch
+   - **Status**: ⚠️ **Dialeto criado, precisa validação completa**
+
+3. **SQLite** ✅
    - **Segmento**: Mobile, Testes, Prototipagem
    - **Driver**: FireDAC (TFDPhysSQLiteDriverLink)
    - **Desafios**: Concorrência (Locking), Tipos
@@ -147,11 +149,11 @@ Melhorar como os dados relacionados são carregados e gerenciar ciclo de vida da
    - **Desafios**: Paginação (FirstSkip), Boolean
    - **Status**: ❌ Não implementado (pode reutilizar dialeto FB 3.0/4.0)
 
-4. **PostgreSQL**
-   - **Segmento**: Microserviços, Cloud, Docker
-   - **Driver**: FireDAC (TFDPhysPGDriverLink)
-   - **Desafios**: JSONB, Case Sensitivity, Batch
-   - **Status**: ⚠️ **Dialeto criado, precisa validação completa**
+4. **Firebird 3.0/4.0**
+   - **Segmento**: ERPs Modernos, Mercado BR
+   - **Driver**: FireDAC (TFDPhysFBDriverLink)
+   - **Desafios**: Dialeto SQL, Transações, Generators
+   - **Status**: ❌ Não implementado
 
 #### Prioridade 3 - Média (Corporativo)
 5. **SQL Server**

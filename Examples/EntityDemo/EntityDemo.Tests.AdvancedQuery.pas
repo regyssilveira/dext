@@ -7,6 +7,7 @@ uses
   System.Generics.Collections,
   Dext.Entity,
   Dext.Entity.Query,
+  Dext.Entity.Grouping,
   EntityDemo.Entities,
   EntityDemo.Tests.Base;
 
@@ -17,6 +18,7 @@ type
     procedure TestAggregations;
     procedure TestDistinct;
     procedure TestPagination;
+    procedure TestGroupBy;
   end;
 
 implementation
@@ -27,6 +29,7 @@ begin
   TestAggregations;
   TestDistinct;
   TestPagination;
+  TestGroupBy;
   Log('');
 end;
 
@@ -145,6 +148,61 @@ begin
     
   finally
     Query.Free;
+  end;
+
+end;
+
+procedure TAdvancedQueryTest.TestGroupBy;
+var
+  Users: TFluentQuery<TUser>;
+  Grouped: TFluentQuery<IGrouping<string, TUser>>;
+  GroupsList: TList<IGrouping<string, TUser>>;
+  Group: IGrouping<string, TUser>;
+begin
+  Log('   Testing GroupBy...');
+  
+  // We have users with cities: New York (2), London (1), and others empty/null.
+  // U4, U5 -> New York
+  // U6 -> London
+
+  
+  Users := FContext.Entities<TUser>.Query;
+  
+  // Use the TQuery.GroupBy function
+  Grouped := Dext.Entity.Grouping.TQuery.GroupBy<TUser, string>(
+    Users.Where(function(U: TUser): Boolean begin Result := U.City <> ''; end),
+    function(U: TUser): string begin Result := U.City; end
+  );
+  
+  try
+    GroupsList := Grouped.ToList;
+    try
+      AssertTrue(GroupsList.Count = 2, 'Should have 2 groups', Format('Found %d', [GroupsList.Count]));
+      
+      for Group in GroupsList do
+      begin
+        if Group.Key = 'New York' then
+        begin
+           // Count items in group
+           var Count := 0;
+           for var U in Group do Inc(Count);
+           AssertTrue(Count = 2, 'New York group should have 2 users', Format('Found %d', [Count]));
+        end
+        else if Group.Key = 'London' then
+        begin
+           var Count := 0;
+           for var U in Group do Inc(Count);
+           AssertTrue(Count = 1, 'London group should have 1 user', Format('Found %d', [Count]));
+        end
+        else
+          AssertTrue(False, 'Unexpected group key', Group.Key);
+      end;
+      
+    finally
+      GroupsList.Free;
+    end;
+  finally
+    Grouped.Free; // This frees the chain
   end;
 end;
 

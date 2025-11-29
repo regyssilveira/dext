@@ -83,7 +83,7 @@ type
     ///   @param AParent Optional parent query that this query depends on. 
     ///                  If provided, this query takes ownership and will free the parent when destroyed.
     /// </summary>
-    constructor Create(const AIteratorFactory: TFunc<TQueryIterator<T>>; AParent: TObject = nil);
+    constructor Create(const AIteratorFactory: TFunc<TQueryIterator<T>>; AParent: TObject = nil); overload;
     destructor Destroy; override;
     
     /// <summary>
@@ -116,6 +116,8 @@ type
     ///   Returns distinct elements from a sequence.
     /// </summary>
     function Distinct: TFluentQuery<T>;
+    
+
 
     // Aggregations
     function Count: Integer; overload;
@@ -157,9 +159,6 @@ type
     function Clone: TQueryIterator<T>;
   end;
 
-  /// <summary>
-  ///   Iterator that projects each element of a sequence into a new form.
-  /// </summary>
   TProjectingIterator<TSource, TResult> = class(TQueryIterator<TResult>)
   private
     FSource: TEnumerable<TSource>;
@@ -233,6 +232,8 @@ type
     constructor Create(const ASource: TEnumerable<T>);
     destructor Destroy; override;
   end;
+
+
 
 implementation
 
@@ -789,5 +790,9 @@ function TPagedResult<T>.GetHasPreviousPage: Boolean;
 begin
   Result := GetPageNumber > 1;
 end;
+
+
+
+
 
 end.
