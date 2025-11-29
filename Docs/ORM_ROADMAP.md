@@ -24,7 +24,7 @@ O núcleo do ORM está funcional, suportando operações CRUD, mapeamento básic
 - [x] **Composite Keys**: Suporte a chaves primárias compostas.
 - [x] **Bulk Operations**: `AddRange`, `UpdateRange`, `RemoveRange` (Iterativo).
 - [x] **Cascade Insert**: Inserção automática de entidades filhas novas.
-- [x] **Optimistic Concurrency**: Controle de concorrência via atributo `[Version]`.
+- [x] **Optimistic Concurrency**: Controle de concorrência via atributo `[Version]` (Implementado e Validado).
 
 #### 3. Relacionamentos
 - [x] **Foreign Keys**: Mapeamento via `[ForeignKey]`.
@@ -34,18 +34,71 @@ O núcleo do ORM está funcional, suportando operações CRUD, mapeamento básic
 
 ## 📅 Próximos Passos
 
-### 🚀 Fase 3: Advanced Querying (Foco Atual)
+### 🚀 Fase 3: Advanced Querying (Em Progresso)
 O objetivo é permitir consultas complexas de forma tipada e fluente.
 
-- [ ] **Fluent Query API**: Builder para consultas (`Where`, `OrderBy`, `Skip`, `Take`).
-  - *Exemplo:* `Context.Entities<TUser>.Where(User.Age > 18).OrderBy(User.Name).List;`
-- [ ] **Metadados Tipados (TypeOf)**: Geração de metadados para evitar strings mágicas nas queries.
-- [ ] **Specifications Pattern**: Integração completa com o padrão Specification.
+- [x] **Fluent Query API**: Builder para consultas (`Where`, `OrderBy`, `Skip`, `Take`).
+  - *Exemplo:* `Context.Entities<TUser>.List(UserEntity.Age >= 18)`
+  - *Exemplo:* `Specification.Where<TUser>(UserEntity.Age >= 18).OrderBy(UserEntity.Name.Asc).Take(10)`
+- [x] **Metadados Tipados (TypeOf)**: Geração de metadados para evitar strings mágicas nas queries.
+  - *Exemplo:* `UserEntity.Age >= 18`, `UserEntity.Name.StartsWith('John')`
+- [x] **Specifications Pattern**: Integração completa com o padrão Specification.
+  - Suporte a inline queries: `List(ICriterion)`
+  - Suporte a specifications reutilizáveis: `TAdultUsersSpec`
+  - Fluent builder: `Specification.Where<T>(...).OrderBy(...).Take(...)`
+- [x] **Operadores Fluentes**: 
+  - Comparação: `=`, `<>`, `>`, `>=`, `<`, `<=`
+  - String: `StartsWith`, `EndsWith`, `Contains`, `Like`, `NotLike`
+  - Range: `Between(lower, upper)`
+  - Null: `IsNull`, `IsNotNull`
+  - Lógicos: `and`, `or`, `not`
+- [x] **OrderBy Tipado**: `UserEntity.Name.Asc`, `UserEntity.Age.Desc`
+- [ ] **Include (Eager Loading)**: Carregamento antecipado de relacionamentos.
+  - *Parcialmente implementado, precisa validação completa*
 
-### 📦 Fase 4: Loading Strategies
-Melhorar como os dados relacionados são carregados.
+#### 🔄 Próximas Melhorias da Fluent API (Inspiradas em Spring4D/LINQ)
 
-- [ ] **Eager Loading (.Include)**: Carregamento antecipado de relacionamentos.
+- [ ] **Lazy Execution (Deferred Execution)**: Queries só executam quando iteradas
+  - Implementar `TQueryIterator<T>` baseado no padrão do Spring4D
+  - Queries retornam `IEnumerable<T>` que adia execução até `for..in` ou `.ToList()`
+  - *Benefício*: Performance - não executa queries desnecessárias
+  - *Exemplo*: `var query := Context.Entities<TUser>.Where(...); // Não executa ainda`
+
+- [ ] **Projeções (Select)**: Retornar apenas campos específicos
+  - `Select<TResult>(selector: TFunc<T, TResult>): IEnumerable<TResult>`
+  - *Exemplo*: `Context.Entities<TUser>.Select<string>(u => u.Name).ToList()`
+  - Gerar SQL otimizado: `SELECT Name FROM users` em vez de `SELECT *`
+
+- [ ] **Agregações**: Funções de agregação tipadas
+  - `Sum<TResult>(selector)`, `Average`, `Min`, `Max`
+  - `Count()`, `Count(predicate)`, `Any()`, `Any(predicate)`
+  - *Exemplo*: `var avgAge := Context.Entities<TUser>.Average(u => u.Age);`
+
+- [ ] **Distinct**: Remover duplicatas
+  - `Distinct(): IEnumerable<T>`
+  - *Exemplo*: `Context.Entities<TUser>.Select(u => u.City).Distinct()`
+
+- [ ] **Paginação Helper**: Resultado paginado com metadados
+  - `Paginate(pageNumber, pageSize): IPagedResult<T>`
+  - Retorna `TotalCount`, `PageCount`, `HasNextPage`, `HasPreviousPage`
+  - *Exemplo*: `var page := Context.Entities<TUser>.Paginate(1, 20);`
+
+- [ ] **GroupBy**: Agrupamento com agregações
+  - `GroupBy<TKey>(keySelector): IEnumerable<IGrouping<TKey, T>>`
+  - *Exemplo*: `Context.Entities<TUser>.GroupBy(u => u.City)`
+
+- [ ] **Join Explícito**: Joins tipados
+  - `Join<TInner, TKey, TResult>(inner, outerKey, innerKey, resultSelector)`
+  - *Exemplo*: `users.Join(addresses, u => u.AddressId, a => a.Id, ...)`
+
+### 📦 Fase 4: Loading Strategies & Memory Management
+Melhorar como os dados relacionados são carregados e gerenciar ciclo de vida das entidades.
+
+- [ ] **Unit of Work Pattern**: Implementar rastreamento de mudanças e commit em lote.
+  - Adicionar método `Clear()` no DbSet para limpar IdentityMap e destruir entidades gerenciadas
+  - Implementar `SaveChanges()` no DbContext para persistir todas as mudanças de uma vez
+  - Rastrear estado das entidades (Added, Modified, Deleted, Unchanged)
+- [ ] **Eager Loading (.Include)**: Carregamento antecipado completo e validado.
   - *Exemplo:* `Context.Entities<TUser>.Include('Address').Find(1);`
 - [ ] **Lazy Loading**: Carregamento sob demanda (via Proxies ou Virtual getters).
 - [ ] **Explicit Loading**: Carregamento manual de navegações (`Context.Entry(User).Collection('Orders').Load()`).

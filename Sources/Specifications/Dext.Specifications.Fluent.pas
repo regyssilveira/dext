@@ -14,11 +14,12 @@ type
   /// </summary>
   TSpecificationBuilder<T: class> = record
   private
-    FSpec: TSpecification<T>;
-    function GetSpec: TSpecification<T>;
+    FSpec: ISpecification<T>;
+    function GetSpec: ISpecification<T>;
+    function SpecObj: TSpecification<T>; inline;
   public
     class operator Implicit(const Value: TSpecificationBuilder<T>): ISpecification<T>;
-    
+
     // Fluent methods
     function Where(const ACriterion: ICriterion): TSpecificationBuilder<T>;
     function OrderBy(const APropertyName: string; AAscending: Boolean = True): TSpecificationBuilder<T>; overload;
@@ -27,7 +28,7 @@ type
     function Take(ACount: Integer): TSpecificationBuilder<T>;
     function Include(const APath: string): TSpecificationBuilder<T>;
     
-    property Spec: TSpecification<T> read GetSpec;
+    property Spec: ISpecification<T> read GetSpec;
   end;
 
   /// <summary>
@@ -43,7 +44,7 @@ implementation
 
 { TSpecificationBuilder<T> }
 
-function TSpecificationBuilder<T>.GetSpec: TSpecification<T>;
+function TSpecificationBuilder<T>.GetSpec: ISpecification<T>;
 begin
   if FSpec = nil then
     FSpec := TSpecification<T>.Create;
@@ -52,44 +53,48 @@ end;
 
 class operator TSpecificationBuilder<T>.Implicit(const Value: TSpecificationBuilder<T>): ISpecification<T>;
 begin
-  Result := Value.GetSpec as ISpecification<T>;
+  Result := Value.GetSpec;
 end;
 
 function TSpecificationBuilder<T>.Where(const ACriterion: ICriterion): TSpecificationBuilder<T>;
 begin
-  GetSpec.Where(ACriterion);
+  SpecObj.Where(ACriterion);
   Result := Self;
 end;
 
 function TSpecificationBuilder<T>.OrderBy(const APropertyName: string; AAscending: Boolean): TSpecificationBuilder<T>;
 begin
-  // Create OrderBy using TOrderBy
-  GetSpec.AddOrderBy(TOrderBy.Create(APropertyName, AAscending));
+  SpecObj.AddOrderBy(TOrderBy.Create(APropertyName, AAscending));
   Result := Self;
 end;
 
 // Overload accepting IOrderBy directly
 function TSpecificationBuilder<T>.OrderBy(const AOrderBy: IOrderBy): TSpecificationBuilder<T>;
 begin
-  GetSpec.AddOrderBy(AOrderBy);
+  SpecObj.AddOrderBy(AOrderBy);
   Result := Self;
 end;
 
 function TSpecificationBuilder<T>.Skip(ACount: Integer): TSpecificationBuilder<T>;
 begin
-  GetSpec.ApplyPaging(ACount, GetSpec.GetTake);
+  SpecObj.ApplyPaging(ACount, FSpec.GetTake);
   Result := Self;
+end;
+
+function TSpecificationBuilder<T>.SpecObj: TSpecification<T>;
+begin
+  Result := GetSpec as TSpecification<T>;
 end;
 
 function TSpecificationBuilder<T>.Take(ACount: Integer): TSpecificationBuilder<T>;
 begin
-  GetSpec.ApplyPaging(GetSpec.GetSkip, ACount);
+  SpecObj.ApplyPaging(FSpec.GetSkip, ACount);
   Result := Self;
 end;
 
 function TSpecificationBuilder<T>.Include(const APath: string): TSpecificationBuilder<T>;
 begin
-  GetSpec.AddInclude(APath);
+  SpecObj.AddInclude(APath);
   Result := Self;
 end;
 

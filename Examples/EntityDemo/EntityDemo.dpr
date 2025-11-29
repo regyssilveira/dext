@@ -4,12 +4,16 @@
 
 uses
   System.SysUtils,
-  EntityDemo.Tests.CRUD,
-  EntityDemo.Tests.Relationships,
-  EntityDemo.Tests.CompositeKeys,
-  EntityDemo.Tests.Bulk,
-  EntityDemo.Tests.Concurrency,
-  EntityDemo.Tests.FluentAPI;
+  EntityDemo.Entities in 'EntityDemo.Entities.pas',
+  EntityDemo.Tests.Base in 'EntityDemo.Tests.Base.pas',
+  EntityDemo.Tests.Bulk in 'EntityDemo.Tests.Bulk.pas',
+  EntityDemo.Tests.CompositeKeys in 'EntityDemo.Tests.CompositeKeys.pas',
+  EntityDemo.Tests.Concurrency in 'EntityDemo.Tests.Concurrency.pas',
+  EntityDemo.Tests.CRUD in 'EntityDemo.Tests.CRUD.pas',
+  EntityDemo.Tests.FluentAPI in 'EntityDemo.Tests.FluentAPI.pas',
+  EntityDemo.Tests.LazyExecution in 'EntityDemo.Tests.LazyExecution.pas',
+  EntityDemo.Tests.Relationships in 'EntityDemo.Tests.Relationships.pas';
+
 
 procedure RunAllTests;
 var
@@ -19,6 +23,7 @@ var
   BulkTest: TBulkTest;
   ConcTest: TConcurrencyTest;
   FluentTest: TFluentAPITest;
+  LazyTest: TLazyExecutionTest;
 begin
   WriteLn('🚀 Dext Entity ORM Demo Suite');
   WriteLn('=============================');
@@ -66,10 +71,19 @@ begin
     FluentTest.Free;
   end;
   
+  LazyTest := TLazyExecutionTest.Create;
+  try
+    LazyTest.Run;
+  finally
+    LazyTest.Free;
+  end;
+  
   WriteLn('✨ All tests completed.');
 end;
 
 begin
+  // TODO : Fix Memory leaks
+  ReportMemoryLeaksOnShutdown := True;
   try
     RunAllTests;
   except

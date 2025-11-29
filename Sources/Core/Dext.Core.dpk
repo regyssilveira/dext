@@ -121,7 +121,8 @@ contains
   Dext.Entity.Drivers.FireDAC in '..\Entity\Dext.Entity.Drivers.FireDAC.pas',
   Dext.Entity.Drivers.Interfaces in '..\Entity\Dext.Entity.Drivers.Interfaces.pas',
   Dext.Entity in '..\Entity\Dext.Entity.pas',
-  Dext.Persistence in '..\Entity\Dext.Persistence.pas';
+  Dext.Persistence in '..\Entity\Dext.Persistence.pas',
+  Dext.Entity.Query in '..\Entity\Dext.Entity.Query.pas';
 
 end.
 

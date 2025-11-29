@@ -2,8 +2,9 @@ program TestDbSet;
 
 {$APPTYPE CONSOLE}
 
+
 uses
-  TestUnit;
+  TestUnit in 'TestUnit.pas';
 
 begin
   RunTest;

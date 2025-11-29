@@ -77,6 +77,7 @@ begin
   FContext.Entities<TAddress>;
   FContext.Entities<TUser>;
   FContext.Entities<TOrderItem>;
+  FContext.Entities<TProduct>;
   FContext.EnsureCreated;
 end;
 

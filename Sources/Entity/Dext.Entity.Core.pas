@@ -8,6 +8,7 @@ uses
   System.Generics.Collections,
   Dext.Entity.Drivers.Interfaces,
   Dext.Entity.Dialects,
+  Dext.Entity.Query,
   Dext.Specifications.Interfaces;
 
 type
@@ -64,6 +65,15 @@ type
     function FirstOrDefault(const ACriterion: ICriterion): T; overload;
     function Any(const ACriterion: ICriterion): Boolean; overload;
     function Count(const ACriterion: ICriterion): Integer; overload;
+    
+    // Lazy Queries (Deferred Execution) - Returns TFluentQuery<T>
+    /// <summary>
+    ///   Returns a lazy query that executes only when enumerated.
+    ///   Call .ToList() to force execution and materialize results.
+    /// </summary>
+    function Query(const ASpec: ISpecification<T>): TFluentQuery<T>; overload;
+    function Query(const ACriterion: ICriterion): TFluentQuery<T>; overload;
+    function Query: TFluentQuery<T>; overload; // All records (lazy)
   end;
 
   /// <summary>

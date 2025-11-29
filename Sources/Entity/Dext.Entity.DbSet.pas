@@ -14,6 +14,7 @@ uses
   Dext.Entity.Core,
   Dext.Entity.Dialects,
   Dext.Entity.Drivers.Interfaces,
+  Dext.Entity.Query,
   Dext.Specifications.Base,
   Dext.Specifications.Interfaces,
   Dext.Specifications.SQL.Generator,
@@ -74,6 +75,11 @@ type
     function FirstOrDefault(const ACriterion: ICriterion): T; overload;
     function Any(const ACriterion: ICriterion): Boolean; overload;
     function Count(const ACriterion: ICriterion): Integer; overload;
+    
+    // Lazy Queries (Deferred Execution)
+    function Query(const ASpec: ISpecification<T>): TFluentQuery<T>; overload;
+    function Query(const ACriterion: ICriterion): TFluentQuery<T>; overload;
+    function Query: TFluentQuery<T>; overload;
   end;
 
   // Helper class for inline queries (internal use)
@@ -101,7 +107,7 @@ begin
   FProps := TDictionary<string, TRttiProperty>.Create;
   FColumns := TDictionary<string, string>.Create;
   FPKColumns := TList<string>.Create;
-  FIdentityMap := TObjectDictionary<string, T>.Create([doOwnsValues]);
+  FIdentityMap := TObjectDictionary<string, T>.Create([]);
   MapEntity;
 end;
 
@@ -367,10 +373,11 @@ var
   ColName, ColType: string;
   IsPK, IsAutoInc: Boolean;
   Attr: TCustomAttribute;
+  Body: string;
 begin
   SB := TStringBuilder.Create;
   try
-    SB.Append('CREATE TABLE ').Append(GetTableName).Append(' (');
+    //SB.Append('CREATE TABLE ').Append(GetTableName).Append(' (');
     
     var First := True;
     for Prop in FRttiContext.GetType(T).GetProperties do
@@ -413,8 +420,9 @@ begin
       SB.Append(')');
     end;
     
-    SB.Append(');');
-    Result := SB.ToString;
+    //SB.Append(');');
+    Body := SB.ToString;
+    Result := FContext.Dialect.GetCreateTableSQL(GetTableName, Body);
   finally
     SB.Free;
   end;
@@ -469,6 +477,12 @@ var
   SQL: string;
   Cmd: IDbCommand;
   Param: TPair<string, TValue>;
+  RowsAffected: Integer;
+  Ctx: TRttiContext;
+  Typ: TRttiType;
+  Prop: TRttiProperty;
+  Attr: TCustomAttribute;
+  VersionProp: TRttiProperty;
 begin
   Generator := TSQLGenerator<T>.Create(FContext.Dialect);
   try
@@ -478,7 +492,35 @@ begin
     for Param in Generator.Params do
       Cmd.AddParam(Param.Key, Param.Value);
       
-    Cmd.Execute;
+    RowsAffected := Cmd.ExecuteNonQuery;
+    
+    // Find Version Property
+    VersionProp := nil;
+    Ctx := TRttiContext.Create;
+    Typ := Ctx.GetType(T);
+    for Prop in Typ.GetProperties do
+    begin
+      for Attr in Prop.GetAttributes do
+        if Attr is VersionAttribute then
+        begin
+          VersionProp := Prop;
+          Break;
+        end;
+      if VersionProp <> nil then Break;
+    end;
+
+    if RowsAffected = 0 then
+    begin
+      if VersionProp <> nil then
+        raise EOptimisticConcurrencyException.Create('Optimistic concurrency failure. Entity has been modified by another process.');
+    end
+    else if VersionProp <> nil then
+    begin
+      // Increment version in memory
+      var CurrentVersion := VersionProp.GetValue(Pointer(AEntity)).AsInteger;
+      VersionProp.SetValue(Pointer(AEntity), CurrentVersion + 1);
+    end;
+    
   finally
     Generator.Free;
   end;
@@ -874,50 +916,75 @@ end;
 
 function TDbSet<T>.List(const ACriterion: ICriterion): TList<T>;
 var
-  Spec: TInlineSpecification<T>;
+  Spec: ISpecification<T>;
 begin
   Spec := TInlineSpecification<T>.CreateWithCriterion(ACriterion);
-  try
-    Result := List(Spec as ISpecification<T>);
-  finally
-    Spec.Free;
-  end;
+  Result := List(Spec);
 end;
 
 function TDbSet<T>.FirstOrDefault(const ACriterion: ICriterion): T;
 var
-  Spec: TInlineSpecification<T>;
+  Spec: ISpecification<T>;
 begin
   Spec := TInlineSpecification<T>.CreateWithCriterion(ACriterion);
-  try
-    Result := FirstOrDefault(Spec as ISpecification<T>);
-  finally
-    Spec.Free;
-  end;
+  Result := FirstOrDefault(Spec as ISpecification<T>);
 end;
 
 function TDbSet<T>.Any(const ACriterion: ICriterion): Boolean;
 var
-  Spec: TInlineSpecification<T>;
+  Spec: ISpecification<T>;
 begin
   Spec := TInlineSpecification<T>.CreateWithCriterion(ACriterion);
-  try
-    Result := Any(Spec as ISpecification<T>);
-  finally
-    Spec.Free;
-  end;
+  Result := Any(Spec as ISpecification<T>);
 end;
 
 function TDbSet<T>.Count(const ACriterion: ICriterion): Integer;
 var
-  Spec: TInlineSpecification<T>;
+  Spec: ISpecification<T>;
 begin
   Spec := TInlineSpecification<T>.CreateWithCriterion(ACriterion);
-  try
-    Result := Count(Spec as ISpecification<T>);
-  finally
-    Spec.Free;
-  end;
+  Result := Count(Spec as ISpecification<T>);
+end;
+
+{ Lazy Query Methods }
+
+function TDbSet<T>.Query(const ASpec: ISpecification<T>): TFluentQuery<T>;
+begin
+  // Return a lazy enumerable that defers execution until enumerated
+  Result := TFluentQuery<T>.Create(
+    function: TQueryIterator<T>
+    begin
+      // Capture ASpec in closure
+      Result := TSpecificationQueryIterator<T>.Create(
+        function: TList<T>
+        begin
+          // This is only executed when MoveNext is called!
+          Result := List(ASpec);
+        end);
+    end);
+end;
+
+function TDbSet<T>.Query(const ACriterion: ICriterion): TFluentQuery<T>;
+var
+  Spec: ISpecification<T>;
+begin
+  Spec := TInlineSpecification<T>.CreateWithCriterion(ACriterion);
+  Result := Query(Spec);
+end;
+
+function TDbSet<T>.Query: TFluentQuery<T>;
+begin
+  // Return all records (lazy)
+  Result := TFluentQuery<T>.Create(
+    function: TQueryIterator<T>
+    begin
+      Result := TSpecificationQueryIterator<T>.Create(
+        function: TList<T>
+        begin
+          // This is only executed when MoveNext is called!
+          Result := List();  // All records
+        end);
+    end);
 end;
 
 end.

@@ -30,8 +30,8 @@ begin
   Log('========================================');
 
   // 1. Setup
-  FContext.Entities<TProduct>;
-  FContext.EnsureCreated;
+  //FContext.Entities<TProduct>; // Already registered in Base
+  //FContext.EnsureCreated; // Already created in Base
 
   var P := TProduct.Create;
   P.Name := 'Concurrency Product';

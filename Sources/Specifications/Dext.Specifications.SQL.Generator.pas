@@ -325,10 +325,11 @@ var
   Typ: TRttiType;
   Prop: TRttiProperty;
   Attr: TCustomAttribute;
-  ColName, ParamName: string;
+  ColName, ParamName, ParamNameNew: string;
   SBSet, SBWhere: TStringBuilder;
-  IsPK, IsMapped: Boolean;
+  IsPK, IsMapped, IsVersion: Boolean;
   Val: TValue;
+  NewVersionVal: Integer;
 begin
   FParams.Clear;
   FParamCount := 0;
@@ -346,12 +347,14 @@ begin
     begin
       IsMapped := True;
       IsPK := False;
+      IsVersion := False;
       ColName := Prop.Name;
       
       for Attr in Prop.GetAttributes do
       begin
         if Attr is NotMappedAttribute then IsMapped := False;
         if Attr is PKAttribute then IsPK := True;
+        if Attr is VersionAttribute then IsVersion := True;
         if Attr is ColumnAttribute then ColName := ColumnAttribute(Attr).Name;
         if Attr is ForeignKeyAttribute then ColName := ForeignKeyAttribute(Attr).ColumnName;
       end;
@@ -359,17 +362,44 @@ begin
       if not IsMapped then Continue;
       
       Val := Prop.GetValue(Pointer(AEntity));
-      ParamName := GetNextParamName;
-      FParams.Add(ParamName, Val);
       
-      if IsPK then
+      if IsVersion then
       begin
+        // Optimistic Concurrency Logic
+        
+        // 1. Add to WHERE clause: Version = :OldVersion
+        ParamName := GetNextParamName;
+        FParams.Add(ParamName, Val);
+        
+        if not FirstWhere then SBWhere.Append(' AND ');
+        FirstWhere := False;
+        SBWhere.Append(FDialect.QuoteIdentifier(ColName)).Append(' = :').Append(ParamName);
+        
+        // 2. Add to SET clause: Version = :NewVersion (OldVersion + 1)
+        ParamNameNew := GetNextParamName;
+        if Val.IsEmpty then NewVersionVal := 1 else NewVersionVal := Val.AsInteger + 1;
+        FParams.Add(ParamNameNew, NewVersionVal);
+        
+        if not FirstSet then SBSet.Append(', ');
+        FirstSet := False;
+        SBSet.Append(FDialect.QuoteIdentifier(ColName)).Append(' = :').Append(ParamNameNew);
+      end
+      else if IsPK then
+      begin
+        // Primary Key -> WHERE clause
+        ParamName := GetNextParamName;
+        FParams.Add(ParamName, Val);
+        
         if not FirstWhere then SBWhere.Append(' AND ');
         FirstWhere := False;
         SBWhere.Append(FDialect.QuoteIdentifier(ColName)).Append(' = :').Append(ParamName);
       end
       else
       begin
+        // Standard Column -> SET clause
+        ParamName := GetNextParamName;
+        FParams.Add(ParamName, Val);
+        
         if not FirstSet then SBSet.Append(', ');
         FirstSet := False;
         SBSet.Append(FDialect.QuoteIdentifier(ColName)).Append(' = :').Append(ParamName);

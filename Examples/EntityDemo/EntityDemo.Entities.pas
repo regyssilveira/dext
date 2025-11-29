@@ -107,7 +107,7 @@ implementation
 class constructor UserEntity.Create;
 begin
   Id := TProp.Create('Id');
-  Name := TProp.Create('Name'); // Should match property name, not column name for now, unless we map it
+  Name := TProp.Create('full_name'); // Use column name from [Column('full_name')]
   Age := TProp.Create('Age');
 end;
 

@@ -194,6 +194,7 @@
         <DCCReference Include="..\Entity\Dext.Entity.Drivers.Interfaces.pas"/>
         <DCCReference Include="..\Entity\Dext.Entity.pas"/>
         <DCCReference Include="..\Entity\Dext.Persistence.pas"/>
+        <DCCReference Include="..\Entity\Dext.Entity.Query.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

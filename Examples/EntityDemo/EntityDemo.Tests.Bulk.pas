@@ -1,4 +1,4 @@
-unit EntityDemo.Tests.Bulk;
+﻿unit EntityDemo.Tests.Bulk;
 
 interface
 
@@ -29,7 +29,7 @@ begin
   Log('📦 Running Bulk Operation Tests...');
   Log('================================');
 
-  BulkUsers := TObjectList<TUser>.Create;
+  BulkUsers := TObjectList<TUser>.Create(False);
   try
     // 1. Bulk Insert
     Log('   Preparing 100 users...');

@@ -20,6 +20,7 @@ type
     function GetColumnType(ATypeInfo: PTypeInfo; AIsAutoInc: Boolean = False): string;
     function GetCascadeActionSQL(AAction: TCascadeAction): string;
     function GetLastInsertIdSQL: string;
+    function GetCreateTableSQL(const ATableName, ABody: string): string;
   end;
 
   /// <summary>
@@ -34,6 +35,7 @@ type
     function GetColumnType(ATypeInfo: PTypeInfo; AIsAutoInc: Boolean = False): string; virtual; abstract;
     function GetCascadeActionSQL(AAction: TCascadeAction): string; virtual;
     function GetLastInsertIdSQL: string; virtual; abstract;
+    function GetCreateTableSQL(const ATableName, ABody: string): string; virtual;
   end;
 
   /// <summary>
@@ -46,6 +48,7 @@ type
     function BooleanToSQL(AValue: Boolean): string; override;
     function GetColumnType(ATypeInfo: PTypeInfo; AIsAutoInc: Boolean = False): string; override;
     function GetLastInsertIdSQL: string; override;
+    function GetCreateTableSQL(const ATableName, ABody: string): string; override;
   end;
 
   /// <summary>
@@ -58,6 +61,7 @@ type
     function BooleanToSQL(AValue: Boolean): string; override;
     function GetColumnType(ATypeInfo: PTypeInfo; AIsAutoInc: Boolean = False): string; override;
     function GetLastInsertIdSQL: string; override;
+    function GetCreateTableSQL(const ATableName, ABody: string): string; override;
   end;
 
 implementation
@@ -89,6 +93,12 @@ begin
   else
     Result := 'NO ACTION';
   end;
+end;
+
+function TBaseDialect.GetCreateTableSQL(const ATableName, ABody: string): string;
+begin
+  // Default implementation (Standard SQL)
+  Result := Format('CREATE TABLE %s (%s);', [ATableName, ABody]);
 end;
 
 { TSQLiteDialect }
@@ -142,6 +152,12 @@ begin
   Result := 'SELECT last_insert_rowid()';
 end;
 
+function TSQLiteDialect.GetCreateTableSQL(const ATableName, ABody: string): string;
+begin
+  // SQLite supports IF NOT EXISTS
+  Result := Format('CREATE TABLE IF NOT EXISTS %s (%s);', [ATableName, ABody]);
+end;
+
 { TPostgreSQLDialect }
 
 function TPostgreSQLDialect.BooleanToSQL(AValue: Boolean): string;
@@ -193,6 +209,12 @@ end;
 function TPostgreSQLDialect.GetLastInsertIdSQL: string;
 begin
   Result := 'SELECT lastval()';
+end;
+
+function TPostgreSQLDialect.GetCreateTableSQL(const ATableName, ABody: string): string;
+begin
+  // PostgreSQL supports IF NOT EXISTS
+  Result := Format('CREATE TABLE IF NOT EXISTS %s (%s);', [ATableName, ABody]);
 end;
 
 end.
