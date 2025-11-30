@@ -21,6 +21,8 @@ type
     FTake: Integer;
     FIsPagingEnabled: Boolean;
     
+    FSelectedColumns: TList<string>;
+    
     // Implementation of ISpecification<T>
     function GetCriteria: ICriterion;
     function GetIncludes: TArray<string>;
@@ -28,6 +30,7 @@ type
     function GetSkip: Integer;
     function GetTake: Integer;
     function IsPagingEnabled: Boolean;
+    function GetSelectedColumns: TArray<string>;
   public
     constructor Create; virtual;
     destructor Destroy; override;
@@ -38,6 +41,7 @@ type
     procedure AddInclude(const APath: string);
     procedure AddOrderBy(const AOrderBy: IOrderBy);
     procedure ApplyPaging(ASkip, ATake: Integer);
+    procedure AddSelect(const AColumn: string);
   end;
 
 implementation
@@ -48,6 +52,7 @@ constructor TSpecification<T>.Create;
 begin
   inherited;
   FIncludes := TList<string>.Create;
+  FSelectedColumns := TList<string>.Create;
   FOrderBy := TList<IOrderBy>.Create;
   FCriteria := nil; // Empty criteria matches all
 end;
@@ -55,6 +60,7 @@ end;
 destructor TSpecification<T>.Destroy;
 begin
   FIncludes.Free;
+  FSelectedColumns.Free;
   FOrderBy.Free;
   inherited;
 end;
@@ -118,6 +124,16 @@ end;
 procedure TSpecification<T>.AddOrderBy(const AOrderBy: IOrderBy);
 begin
   FOrderBy.Add(AOrderBy);
+end;
+
+function TSpecification<T>.GetSelectedColumns: TArray<string>;
+begin
+  Result := FSelectedColumns.ToArray;
+end;
+
+procedure TSpecification<T>.AddSelect(const AColumn: string);
+begin
+  FSelectedColumns.Add(AColumn);
 end;
 
 end.

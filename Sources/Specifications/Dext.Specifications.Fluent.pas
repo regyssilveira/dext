@@ -27,6 +27,8 @@ type
     function Skip(ACount: Integer): TSpecificationBuilder<T>;
     function Take(ACount: Integer): TSpecificationBuilder<T>;
     function Include(const APath: string): TSpecificationBuilder<T>;
+    function Select(const AColumn: string): TSpecificationBuilder<T>; overload;
+    function Select(const AColumns: TArray<string>): TSpecificationBuilder<T>; overload;
     
     property Spec: ISpecification<T> read GetSpec;
   end;
@@ -95,6 +97,21 @@ end;
 function TSpecificationBuilder<T>.Include(const APath: string): TSpecificationBuilder<T>;
 begin
   SpecObj.AddInclude(APath);
+  Result := Self;
+end;
+
+function TSpecificationBuilder<T>.Select(const AColumn: string): TSpecificationBuilder<T>;
+begin
+  SpecObj.AddSelect(AColumn);
+  Result := Self;
+end;
+
+function TSpecificationBuilder<T>.Select(const AColumns: TArray<string>): TSpecificationBuilder<T>;
+var
+  Col: string;
+begin
+  for Col in AColumns do
+    SpecObj.AddSelect(Col);
   Result := Self;
 end;
 

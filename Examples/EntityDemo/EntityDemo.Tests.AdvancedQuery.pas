@@ -25,6 +25,7 @@ type
     procedure TestGroupBy;
     procedure TestJoin;
     procedure TestInclude;
+    procedure TestSelectOptimized;
   end;
 
 implementation
@@ -38,9 +39,44 @@ begin
   TestGroupBy;
   TestJoin;
   TestInclude;
+  TestSelectOptimized;
   Log('');
 end;
 
+procedure TAdvancedQueryTest.TestSelectOptimized;
+var
+  Users: TList<TUser>;
+  Spec: ISpecification<TUser>;
+  Builder: TSpecificationBuilder<TUser>;
+  U: TUser;
+begin
+  Log('   Testing Select Optimized (Projections)...');
+  TearDown;
+  Setup;
+  
+  // Insert user with Name and Age
+  U := TUser.Create;
+  U.Name := 'John Doe';
+  U.Age := 30;
+  U.City := 'New York';
+  FContext.Entities<TUser>.Add(U);
+  
+  // Select only Name
+  Builder := Specification.All<TUser>;
+  Spec := Builder.Select('Name');
+  
+  Users := FContext.Entities<TUser>.List(Spec);
+  try
+    AssertTrue(Users.Count = 1, 'Should find 1 user', Format('Found %d', [Users.Count]));
+    AssertTrue(Users[0].Name = 'John Doe', 'Name should be loaded', Format('Found "%s"', [Users[0].Name]));
+    // Age should be default (0) because it wasn't selected
+    AssertTrue(Users[0].Age = 0, 'Age should be 0 (not loaded)', Format('Found %d', [Users[0].Age]));
+    // City should be default ('')
+    AssertTrue(Users[0].City = '', 'City should be empty (not loaded)', Format('Found "%s"', [Users[0].City]));
+  finally
+    Users.Free;
+  end;
+end;
 procedure TAdvancedQueryTest.TestAggregations;
 var
   Users: TFluentQuery<TUser>;
@@ -63,23 +99,41 @@ begin
     AssertTrue(Count = 3, 'Count should be 3', Format('Count was %d', [Count]));
     
     // Sum
-    SumAge := Users.Sum(function(U: TUser): Double begin Result := U.Age; end);
+    SumAge := Users.Sum(function(U: TUser): Double
+      begin
+        Result := U.Age;
+      end);
     AssertTrue(Abs(SumAge - 60) < 0.001, 'Sum Age should be 60', Format('Sum was %f', [SumAge]));
-    
+
     // Average
-    AvgAge := Users.Average(function(U: TUser): Double begin Result := U.Age; end);
+    AvgAge := Users.Average(function(U: TUser): Double
+      begin
+        Result := U.Age;
+      end);
     AssertTrue(Abs(AvgAge - 20) < 0.001, 'Avg Age should be 20', Format('Avg was %f', [AvgAge]));
     
     // Min/Max
-    MinAge := Users.Min(function(U: TUser): Double begin Result := U.Age; end);
-    MaxAge := Users.Max(function(U: TUser): Double begin Result := U.Age; end);
+    MinAge := Users.Min(function(U: TUser): Double
+      begin
+        Result := U.Age;
+      end);
+    MaxAge := Users.Max(function(U: TUser): Double
+      begin
+        Result := U.Age;
+      end);
     AssertTrue(Abs(MinAge - 10) < 0.001, 'Min Age should be 10', Format('Min was %f', [MinAge]));
     AssertTrue(Abs(MaxAge - 30) < 0.001, 'Max Age should be 30', Format('Max was %f', [MaxAge]));
     
     // Any
     AssertTrue(Users.Any, 'Any should be true', 'Any was false');
-    AssertTrue(Users.Any(function(U: TUser): Boolean begin Result := U.Age > 25; end), 'Any(Age > 25) should be true', 'Any(...) was false');
-    AssertTrue(not Users.Any(function(U: TUser): Boolean begin Result := U.Age > 100; end), 'Any(Age > 100) should be false', 'Any(...) was true');
+    AssertTrue(Users.Any(function(U: TUser): Boolean
+      begin
+        Result := U.Age > 25;
+      end), 'Any(Age > 25) should be true', 'Any(...) was false');
+    AssertTrue(not Users.Any(function(U: TUser): Boolean
+      begin
+        Result := U.Age > 100;
+      end), 'Any(Age > 100) should be false', 'Any(...) was true');
     
   finally
     Users.Free;
@@ -102,12 +156,18 @@ begin
   // Project to City then Distinct
   Users := FContext.Entities<TUser>.Query;
   // Note: Users is passed as parent to the fluent chain, so it will be freed when Cities is freed.
-  
+
   Cities := Users
-    .Where(function(U: TUser): Boolean begin Result := U.City <> ''; end)
-    .Select<string>(function(U: TUser): string begin Result := U.City; end)
+    .Where(function(U: TUser): Boolean
+       begin
+         Result := U.City <> '';
+       end)
+    .Select<string>(function(U: TUser): string
+       begin
+         Result := U.City;
+       end)
     .Distinct;
-    
+
   try
     DistinctCities := Cities.ToList;
     try

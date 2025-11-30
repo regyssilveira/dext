@@ -5,6 +5,7 @@
 uses
   System.SysUtils,
   EntityDemo.Entities in 'EntityDemo.Entities.pas',
+  EntityDemo.Tests.AdvancedQuery in 'EntityDemo.Tests.AdvancedQuery.pas',
   EntityDemo.Tests.Base in 'EntityDemo.Tests.Base.pas',
   EntityDemo.Tests.Bulk in 'EntityDemo.Tests.Bulk.pas',
   EntityDemo.Tests.CompositeKeys in 'EntityDemo.Tests.CompositeKeys.pas',
@@ -12,9 +13,7 @@ uses
   EntityDemo.Tests.CRUD in 'EntityDemo.Tests.CRUD.pas',
   EntityDemo.Tests.FluentAPI in 'EntityDemo.Tests.FluentAPI.pas',
   EntityDemo.Tests.LazyExecution in 'EntityDemo.Tests.LazyExecution.pas',
-  EntityDemo.Tests.Relationships in 'EntityDemo.Tests.Relationships.pas',
-  EntityDemo.Tests.AdvancedQuery in 'EntityDemo.Tests.AdvancedQuery.pas';
-
+  EntityDemo.Tests.Relationships in 'EntityDemo.Tests.Relationships.pas';
 
 procedure RunAllTests;
 var

@@ -38,6 +38,7 @@ type
     function GetSkip: Integer;
     function GetTake: Integer;
     function IsPagingEnabled: Boolean;
+    function GetSelectedColumns: TArray<string>;
   end;
 
   /// <summary>

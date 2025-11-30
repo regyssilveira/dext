@@ -112,6 +112,12 @@ O objetivo é permitir consultas complexas de forma tipada e fluente.
   - *Status*: ✅ **Implementado e Validado**
   - *Benefício*: Performance dramática em verificações de existência
 
+- [x] **Select Otimizado (Projeções)**: Carrega apenas colunas necessárias
+  - `Specification.Select(['Name', 'City'])`
+  - SQL gerado: `SELECT Name, City FROM Users ...`
+  - *Status*: ✅ **Implementado e Validado**
+  - *Benefício*: Reduz tráfego de rede e uso de memória ao evitar `SELECT *`
+
 ### 📦 Fase 4: Loading Strategies & Memory Management
 Melhorar como os dados relacionados são carregados e gerenciar ciclo de vida das entidades.
 

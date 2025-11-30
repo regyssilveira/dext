@@ -801,7 +801,19 @@ begin
   Generator := TSQLWhereGenerator.Create(FContext.Dialect);
   SQL := TStringBuilder.Create;
   try
-    SQL.Append('SELECT * FROM ').Append(GetTableName);
+    // 0. Generate SELECT columns
+    if Length(ASpec.GetSelectedColumns) > 0 then
+    begin
+      SQL.Append('SELECT ');
+      for var i := 0 to Length(ASpec.GetSelectedColumns) - 1 do
+      begin
+        if i > 0 then SQL.Append(', ');
+        SQL.Append(FContext.Dialect.QuoteIdentifier(ASpec.GetSelectedColumns[i]));
+      end;
+      SQL.Append(' FROM ').Append(GetTableName);
+    end
+    else
+      SQL.Append('SELECT * FROM ').Append(GetTableName);
     
     // 1. Generate WHERE
     if ASpec.GetCriteria <> nil then
@@ -873,7 +885,19 @@ begin
   Generator := TSQLWhereGenerator.Create(FContext.Dialect);
   SQL := TStringBuilder.Create;
   try
-    SQL.Append('SELECT * FROM ').Append(GetTableName);
+    // 0. Generate SELECT columns
+    if Length(ASpec.GetSelectedColumns) > 0 then
+    begin
+      SQL.Append('SELECT ');
+      for var i := 0 to Length(ASpec.GetSelectedColumns) - 1 do
+      begin
+        if i > 0 then SQL.Append(', ');
+        SQL.Append(FContext.Dialect.QuoteIdentifier(ASpec.GetSelectedColumns[i]));
+      end;
+      SQL.Append(' FROM ').Append(GetTableName);
+    end
+    else
+      SQL.Append('SELECT * FROM ').Append(GetTableName);
     
     // 1. Generate WHERE
     if ASpec.GetCriteria <> nil then
