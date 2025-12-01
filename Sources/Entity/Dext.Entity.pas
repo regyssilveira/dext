@@ -12,6 +12,7 @@ uses
   Dext.Entity.Drivers.Interfaces,
   Dext.Entity.Dialects,
   Dext.Entity.Attributes,
+  Dext.Entity.LazyLoading,
   Dext.Specifications.Interfaces,
   Dext.Specifications.Expression,
   Dext.Specifications.Types;
@@ -19,11 +20,6 @@ uses
 type
   /// <summary>
   ///   Concrete implementation of DbContext.
-  ///   Manages database connection, transactions, and entity sets.
-  ///   
-  ///   Note: This class implements IDbContext but disables reference counting.
-  ///   You must manage its lifecycle manually (Free).
-  /// </summary>
   TChangeTracker = class(TInterfacedObject, IChangeTracker)
   private
     FTrackedEntities: TDictionary<TObject, TEntityState>;
@@ -34,6 +30,7 @@ type
     function GetState(const AEntity: TObject): TEntityState;
     function HasChanges: Boolean;
     procedure AcceptAllChanges;
+    procedure Clear;
     function GetTrackedEntities: TEnumerable<TPair<TObject, TEntityState>>;
   end;
 
@@ -108,6 +105,7 @@ type
     procedure EnsureCreated;
     
     function SaveChanges: Integer;
+    procedure Clear;
     function ChangeTracker: IChangeTracker;
     
     /// <summary>
@@ -350,6 +348,24 @@ begin
   end;
 end;
 
+procedure TDbContext.Clear;
+var
+  SetIntf: IInterface;
+  DbSet: IDbSet;
+begin
+  // Clear Change Tracker
+  FChangeTracker.Clear;
+  
+  // Clear Identity Map of all cached DbSets
+  for SetIntf in FCache.Values do
+  begin
+    if Supports(SetIntf, IDbSet, DbSet) then
+    begin
+      DbSet.Clear;
+    end;
+  end;
+end;
+
 function TDbContext.ChangeTracker: IChangeTracker;
 begin
   Result := FChangeTracker;
@@ -419,6 +435,11 @@ begin
     else if State in [esAdded, esModified] then
       FTrackedEntities[Entity] := esUnchanged;
   end;
+end;
+
+procedure TChangeTracker.Clear;
+begin
+  FTrackedEntities.Clear;
 end;
 
 function TChangeTracker.GetTrackedEntities: TEnumerable<TPair<TObject, TEntityState>>;
@@ -502,6 +523,23 @@ begin
   
   if FKName = '' then
     raise Exception.CreateFmt('Could not determine Foreign Key for collection %s', [FPropName]);
+  
+  // IMPORTANT: FKName is the property name, we need to convert to column name!
+  var FKProp := ChildTyp.GetProperty(FKName);
+  if FKProp <> nil then
+  begin
+    // Check if property has [Column] attribute
+    for Attr in FKProp.GetAttributes do
+    begin
+      if Attr is ColumnAttribute then
+      begin
+        FKName := ColumnAttribute(Attr).Name;
+        Break;
+      end;
+    end;
+  end;
+  
+  WriteLn('DEBUG: Collection.Load - FKName=', FKName, ', ParentPKVal=', ParentPKVal.ToString);
     
   // Build Query: Child.FK = Parent.Id
   var Expr := TBinaryExpression.Create(
@@ -512,9 +550,11 @@ begin
   
   var Results := DbSet.ListObjects(Expr);
   try
+    WriteLn('DEBUG: Collection.Load - Found ', Results.Count, ' results');
     // Add results to ListObj
     for var ChildObj in Results do
     begin
+      WriteLn('DEBUG: Collection.Load - Adding ', ChildObj.ClassName);
       AddMethod.Invoke(ListObj, [ChildObj]);
     end;
   finally
@@ -583,10 +623,17 @@ begin
   if FKVal.IsEmpty or (FKVal.AsInteger = 0) then Exit; // No FK, nothing to load
   
   // Find Child
+  WriteLn('DEBUG: Loading Reference ' + FPropName + ' FK=' + FKVal.ToString);
   ChildObj := DbSet.FindObject(FKVal.AsVariant);
+  WriteLn('DEBUG: ChildObj found: ' + BoolToStr(ChildObj <> nil, True));
   
   if ChildObj <> nil then
+  begin
+    WriteLn('DEBUG: Setting Value type: ' + ChildObj.ClassName);
+    // The TClassToClassConverter will handle the conversion from TObject to TAddress
     Prop.SetValue(Pointer(FParent), ChildObj);
+    WriteLn('DEBUG: Value Set');
+  end;
 end;
 
 

@@ -25,6 +25,7 @@ type
     function GetState(const AEntity: TObject): TEntityState;
     function HasChanges: Boolean;
     procedure AcceptAllChanges;
+    procedure Clear;
     function GetTrackedEntities: TEnumerable<TPair<TObject, TEntityState>>;
   end;
 
@@ -38,6 +39,7 @@ type
     procedure Add(const AEntity: TObject);
     function GetTableName: string;
     function GenerateCreateTableScript: string;
+    procedure Clear;
     
     // Non-generic query support
     function ListObjects(const AExpression: IExpression): TList<TObject>;
@@ -140,6 +142,12 @@ type
     ///   Saves all changes made in this context to the database.
     /// </summary>
     function SaveChanges: Integer;
+
+    /// <summary>
+    ///   Clears the ChangeTracker and IdentityMap of all DbSets.
+    ///   Detaches all entities.
+    /// </summary>
+    procedure Clear;
 
     /// <summary>
     ///   Access the Change Tracker.

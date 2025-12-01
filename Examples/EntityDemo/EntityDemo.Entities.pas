@@ -3,8 +3,10 @@
 interface
 
 uses
+  System.SysUtils,
   System.Generics.Collections,
   Dext.Entity.Attributes,
+  Dext.Entity.Core,
   Dext.Specifications.Base,
   Dext.Specifications.Expression,
   Dext.Specifications.Interfaces,
@@ -20,6 +22,7 @@ type
     FStreet: string;
     FCity: string;
     FUsers: TList<TUser>;
+    function GetUsers: TList<TUser>; virtual;
   public
     constructor Create;
     destructor Destroy; override;
@@ -29,7 +32,7 @@ type
     property Street: string read FStreet write FStreet;
     property City: string read FCity write FCity;
     
-    property Users: TList<TUser> read FUsers;
+    property Users: TList<TUser> read GetUsers;
   end;
 
   [Table('users')]
@@ -42,6 +45,9 @@ type
     FCity: string;
     FAddressId: Integer;
     FAddress: TAddress;
+    FContext: IInterface;  // Will hold IDbContext - using IInterface to avoid circular reference
+    function GetAddress: TAddress; virtual;
+    procedure SetAddress(const Value: TAddress); virtual;
   public
     [PK, AutoInc]
     property Id: Integer read FId write FId;
@@ -57,7 +63,7 @@ type
     property AddressId: Integer read FAddressId write FAddressId;
 
     [ForeignKey('AddressId', caCascade)]  // CASCADE on delete
-    property Address: TAddress read FAddress write FAddress;
+    property Address: TAddress read GetAddress write SetAddress;
   end;
 
   [Table('order_items')]
@@ -130,12 +136,57 @@ begin
   inherited;
 end;
 
+function TAddress.GetUsers: TList<TUser>;
+begin
+  // TODO : Criar automaticamente com Activator
+  // Lazy initialization: Criar lista se não existe
+  if FUsers = nil then
+  begin
+    FUsers := TList<TUser>.Create;
+  end;
+  
+  // NOTE: Lazy Loading de coleções NÃO é automático!
+  // Use Context.Entry(Address).Collection('Users').Load explicitamente
+  // ou use Include ao carregar a entidade
+  
+  Result := FUsers;
+end;
+
+{ TUser }
+
+function TUser.GetAddress: TAddress;
+var
+  Ctx: IDbContext;
+begin
+  // Lazy Loading: Se FAddress é nil mas temos AddressId, carregar do banco
+  if (FAddress = nil) and (FAddressId > 0) and (FContext <> nil) then
+  begin
+    // Cast FContext to IDbContext
+    if Supports(FContext, IDbContext, Ctx) then
+    begin
+      try
+        Ctx.Entry(Self).Reference('Address').Load;
+      except
+        on E: Exception do
+          WriteLn('DEBUG: Error loading Address: ', E.Message);
+      end;
+    end;
+  end;
+  
+  Result := FAddress;
+end;
+
+procedure TUser.SetAddress(const Value: TAddress);
+begin
+  FAddress := Value;
+end;
+
 { UserEntity }
 
 class constructor UserEntity.Create;
 begin
   Id := TProperty.Create('Id');
-  Name := TProperty.Create('full_name'); // Use column name from [Column('full_name')]
+  Name := TProperty.Create('full_name');
   Age := TProperty.Create('Age');
   Email := TProperty.Create('Email');
   City := TProperty.Create('City');

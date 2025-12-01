@@ -18,7 +18,8 @@ uses
   Dext.Specifications.Base,
   Dext.Specifications.Interfaces,
   Dext.Specifications.SQL.Generator,
-  Dext.Specifications.Types;
+  Dext.Specifications.Types,
+  Dext.Entity.LazyLoading;
 
 type
   TDbSet<T: class> = class(TInterfacedObject, IDbSet<T>, IDbSet)
@@ -30,6 +31,7 @@ type
     FProps: TDictionary<string, TRttiProperty>; // Column Name -> Property
     FColumns: TDictionary<string, string>;      // Property Name -> Column Name
     FIdentityMap: TObjectDictionary<string, T>; // ID (String) -> Entity. Owns objects.
+    FLazyLoaders: TObjectDictionary<TObject, TLazyLoader>;
     
     procedure MapEntity;
     function Hydrate(Reader: IDbReader): T;
@@ -50,6 +52,7 @@ type
     procedure PersistUpdate(const AEntity: TObject);
     procedure PersistRemove(const AEntity: TObject);
     function GenerateCreateTableScript: string;
+    procedure Clear;
     
     procedure Add(const AEntity: T); overload;
     procedure Update(const AEntity: T);
@@ -111,12 +114,14 @@ begin
   FColumns := TDictionary<string, string>.Create;
   FPKColumns := TList<string>.Create;
   FIdentityMap := TObjectDictionary<string, T>.Create([]);
+  FLazyLoaders := TObjectDictionary<TObject, TLazyLoader>.Create([doOwnsValues]);
   MapEntity;
 end;
 
 destructor TDbSet<T>.Destroy;
 begin
   FIdentityMap.Free;
+  FLazyLoaders.Free;
   FProps.Free;
   FColumns.Free;
   FPKColumns.Free;
@@ -337,6 +342,16 @@ begin
   // Add to Identity Map
   if PKVal <> '' then
     FIdentityMap.Add(PKVal, Result);
+
+  // Inject DbContext into entity for Lazy Loading
+  var ContextProp := FRttiContext.GetType(T).GetField('FContext');
+  if ContextProp <> nil then
+  begin
+    ContextProp.SetValue(Pointer(Result), TValue.From<IInterface>(FContext));
+  end;
+
+  // Attach Lazy Loader (deprecated - using manual lazy loading now)
+  // FLazyLoaders.Add(Result, TLazyLoader.Create(FContext, Result));
 end;
 
 function TDbSet<T>.FindObject(const AId: Variant): TObject;
@@ -429,6 +444,12 @@ begin
   finally
     SB.Free;
   end;
+end;
+
+procedure TDbSet<T>.Clear;
+begin
+  FIdentityMap.Clear;
+  FLazyLoaders.Clear;
 end;
 
 procedure TDbSet<T>.PersistAdd(const AEntity: TObject);
@@ -867,7 +888,9 @@ begin
     Cmd := FContext.Connection.CreateCommand(SQL.ToString) as IDbCommand;
     
     for Param in Generator.Params do
+    begin
       Cmd.AddParam(Param.Key, Param.Value);
+    end;
       
     Reader := Cmd.ExecuteQuery;
     while Reader.Next do

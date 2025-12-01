@@ -72,6 +72,11 @@ type
     function Convert(const AValue: TValue; ATargetType: PTypeInfo): TValue; override;
   end;
 
+  // Variant -> Class (handles object pointers stored in Variant)
+  TVariantToClassConverter = class(TBaseConverter)
+    function Convert(const AValue: TValue; ATargetType: PTypeInfo): TValue; override;
+  end;
+
   // Integer -> Enum
   TIntegerToEnumConverter = class(TBaseConverter)
     function Convert(const AValue: TValue; ATargetType: PTypeInfo): TValue; override;
@@ -79,6 +84,11 @@ type
 
   // String -> Guid
   TStringToGuidConverter = class(TBaseConverter)
+    function Convert(const AValue: TValue; ATargetType: PTypeInfo): TValue; override;
+  end;
+
+  // Class -> Class (handles object pointers and inheritance)
+  TClassToClassConverter = class(TBaseConverter)
     function Convert(const AValue: TValue; ATargetType: PTypeInfo): TValue; override;
   end;
 
@@ -107,11 +117,17 @@ begin
   // We register Variant -> tkEnumeration
   RegisterConverter(tkVariant, tkEnumeration, TVariantToEnumConverter.Create);
   
+  // Variant -> Class (for object pointers stored in Variant - CRITICAL for Lazy Loading)
+  RegisterConverter(tkVariant, tkClass, TVariantToClassConverter.Create);
+  
   // Integer -> Enum
   RegisterConverter(tkInteger, tkEnumeration, TIntegerToEnumConverter.Create);
   
   // String -> GUID
   RegisterConverter(TypeInfo(string), TypeInfo(TGUID), TStringToGuidConverter.Create);
+  
+  // Class -> Class (for object references and inheritance)
+  RegisterConverter(tkClass, tkClass, TClassToClassConverter.Create);
 end;
 
 class destructor TValueConverterRegistry.Destroy;
@@ -284,6 +300,66 @@ begin
   Result := TValue.From<TGUID>(StringToGUID(VarToStr(AValue.AsVariant)));
 end;
 
+{ TVariantToClassConverter }
+
+function TVariantToClassConverter.Convert(const AValue: TValue; ATargetType: PTypeInfo): TValue;
+var
+  V: Variant;
+  Obj: TObject;
+  TargetClass: TClass;
+  VarData: PVarData;
+begin
+  // This is the CRITICAL converter for Lazy Loading!
+  // When we do Prop.SetValue(Pointer(FParent), ChildObj) where ChildObj is TObject,
+  // Delphi RTTI automatically converts TObject to Variant.
+  // This converter extracts the object pointer from the Variant and validates it.
+  
+  V := AValue.AsVariant;
+  
+  // Check if Variant is null/empty
+  if VarIsNull(V) or VarIsEmpty(V) then
+    Exit(TValue.From<TObject>(nil));
+  
+  // Get target class
+  if ATargetType.Kind <> tkClass then
+    raise EConvertError.CreateFmt('Target type %s is not a class', [ATargetType.Name]);
+    
+  TargetClass := ATargetType.TypeData.ClassType;
+  
+  // Extract object pointer from Variant
+  // When an object is stored in a Variant, it's stored as a pointer in VarData
+  VarData := @V;
+  
+  // Check if Variant contains an object pointer (varUnknown or custom type)
+  // Object pointers in Variants are typically stored as IUnknown or raw pointers
+  if VarData.VType = varUnknown then
+  begin
+    // Try to get as IUnknown and cast
+    Obj := TObject(VarData.VUnknown);
+  end
+  else
+  begin
+    // Try direct pointer extraction
+    // This handles cases where object is stored directly
+    try
+      Obj := TObject(TVarData(V).VPointer);
+    except
+      raise EConvertError.CreateFmt('Variant does not contain a valid object pointer', []);
+    end;
+  end;
+  
+  // Validate object is compatible with target class
+  if Obj = nil then
+    Exit(TValue.From<TObject>(nil));
+    
+  if Obj is TargetClass then
+    Result := TValue.From<TObject>(Obj)
+  else
+    raise EConvertError.CreateFmt('Object of type %s is not compatible with %s', 
+      [Obj.ClassName, TargetClass.ClassName]);
+end;
+
+
 { TIntegerToEnumConverter }
 
 function TIntegerToEnumConverter.Convert(const AValue: TValue; ATargetType: PTypeInfo): TValue;
@@ -296,6 +372,46 @@ end;
 function TStringToGuidConverter.Convert(const AValue: TValue; ATargetType: PTypeInfo): TValue;
 begin
   Result := TValue.From<TGUID>(StringToGUID(AValue.AsString));
+end;
+
+{ TClassToClassConverter }
+
+function TClassToClassConverter.Convert(const AValue: TValue; ATargetType: PTypeInfo): TValue;
+var
+  SourceObj: TObject;
+  TargetClass: TClass;
+begin
+  // Handle object references and inheritance
+  // This is needed for Lazy Loading where we have TObject containing TAddress
+  // and need to assign it to a property of type TAddress
+  
+  if AValue.IsEmpty then
+    Exit(TValue.Empty);
+    
+  // Get the source object
+  SourceObj := AValue.AsObject;
+  
+  // If nil, return nil
+  if SourceObj = nil then
+    Exit(TValue.From<TObject>(nil));
+  
+  // Get target class
+  if ATargetType.Kind <> tkClass then
+    raise EConvertError.CreateFmt('Target type %s is not a class', [ATargetType.Name]);
+    
+  TargetClass := ATargetType.TypeData.ClassType;
+  
+  // Check if source object is compatible with target class
+  if SourceObj is TargetClass then
+  begin
+    // Compatible - return the object as-is wrapped in TValue
+    Result := TValue.From<TObject>(SourceObj);
+  end
+  else
+  begin
+    raise EConvertError.CreateFmt('Cannot convert %s to %s (incompatible types)', 
+      [SourceObj.ClassName, TargetClass.ClassName]);
+  end;
 end;
 
 end.

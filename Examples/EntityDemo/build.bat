@@ -1,3 +1,3 @@
 @echo off
-cd /d %~dp0
-dcc32 -B -U"..\..\Sources\Core;..\..\Sources\Entity;..\..\Sources\Specifications" EntityDemo.dpr
+call "C:\Program Files (x86)\Embarcadero\Studio\24.0\bin\rsvars.bat"
+dcc32 -B EntityDemo.dpr
