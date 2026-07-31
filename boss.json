@@ -1,0 +1,11 @@
+{
+  "name": "Dext",
+  "description": "Modern full-stack framework for Delphi",
+  "version": "1.0.0-rc.2",
+  "homepage": "https://github.com/regyssilveira/dext",
+  "mainsrc": "Sources/",
+  "projects": [],
+  "dependencies": {},
+  "devDependencies": {},
+  "license": "Apache-2.0"
+}

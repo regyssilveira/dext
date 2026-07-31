@@ -43,6 +43,12 @@ Dext was specifically designed to solve the real-world pain points faced by Delp
 
 ## Quick Start
 
+Install the release candidate with Boss4D:
+
+```powershell
+boss4d add Dext@1.0.0-rc.2
+```
+
 See how Dext's structure simplifies complex flows into clean, typed, and object-oriented code. Exploring the framework's pillars:
 
 ### Minimal API
