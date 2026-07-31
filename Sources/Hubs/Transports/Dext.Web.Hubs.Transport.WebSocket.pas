@@ -34,22 +34,65 @@ uses
   Dext.Auth.Identity,
   Dext.Threading.CancellationToken,
   Dext.Server.Engine.Interfaces,
+  Dext.WebSocket.Protocol,
   Dext.Web.Hubs.Interfaces,
   Dext.Web.Interfaces;
 
 type
+  TOnBinaryHubMessage = reference to procedure(const ConnectionId: string;
+    const Data: TBytes);
+
+  IWebSocketHubConnectionControl = interface
+    ['{DFA8ED6D-F78A-4658-914A-E08399DD92D5}']
+    procedure Touch;
+    procedure SendKeepAlive(ANow: UInt64);
+  end;
+
+  IWebSocketPreparedSender = interface
+    ['{55CDCC90-0E44-41A2-9FA1-2B8B20D5855E}']
+    procedure SendPreparedFrame(const AFrame: TBytes);
+    function GetProtocolName: string;
+    function IsCompressionEnabled: Boolean;
+  end;
+
+  TWebSocketHubTransport = class;
+
+  TWebSocketKeepAliveThread = class(TThread)
+  private
+    FOwner: TWebSocketHubTransport;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(AOwner: TWebSocketHubTransport);
+  end;
+
   /// <summary>
   /// WebSocket connection wrapping the raw server upgrade connection.
   /// </summary>
-  TWebSocketHubConnection = class(TInterfacedObject, IHubConnection)
+  TWebSocketHubConnection = class(TInterfacedObject, IHubConnection,
+    IWebSocketHubConnectionControl, IWebSocketPreparedSender)
   private
     FConnectionId: string;
     FWSConnection: IDextWebSocketConnection;
     FState: TConnectionState;
+    FUser: IClaimsPrincipal;
     FItems: IDictionary<string, TValue>;
+    FAbortTokenSource: TCancellationTokenSource;
     FLock: TCriticalSection;
+    FReceiveBuffer: TBytes;
+    FReceiveStart: Integer;
+    FReceiveEnd: Integer;
+    FFragmentOpcode: TWebSocketOpcode;
+    FFragmentActive: Boolean;
+    FFragmentCompressed: Boolean;
+    FFragmentPayload: TBytes;
+    FLastActivityTick: Int64;
+    FHandshakeComplete: Boolean;
+    FProtocolName: string;
   public
-    constructor Create(const AConnectionId: string; const AWSConnection: IDextWebSocketConnection);
+    constructor Create(const AConnectionId: string;
+      const AWSConnection: IDextWebSocketConnection;
+      const AUser: IClaimsPrincipal = nil);
     destructor Destroy; override;
 
     // IHubConnection
@@ -62,7 +105,12 @@ type
     function GetAbortToken: ICancellationToken;
 
     procedure SendAsync(const Message: string);
+    procedure SendPreparedFrame(const AFrame: TBytes);
+    function GetProtocolName: string;
+    function IsCompressionEnabled: Boolean;
     procedure Close(const Reason: string = '');
+    procedure Touch;
+    procedure SendKeepAlive(ANow: UInt64);
 
     property ConnectionId: string read GetConnectionId;
     property State: TConnectionState read GetState;
@@ -73,14 +121,36 @@ type
   /// </summary>
   TWebSocketHubTransport = class(TInterfacedObject, IHubTransport)
   private
-    FConnections: IDictionary<string, TWebSocketHubConnection>;
+    FConnections: IDictionary<string, IHubConnection>;
     FLock: TCriticalSection;
+    FPreparedLock: TCriticalSection;
+    FLastPreparedText: string;
+    FLastPreparedFrame: TBytes;
     FOnMessageReceived: TOnMessageReceived;
+    FOnBinaryMessageReceived: TOnBinaryHubMessage;
     FOnConnected: TOnConnectionEvent;
     FOnDisconnected: TOnConnectionEvent;
     FShuttingDown: Boolean;
+    FMaximumReceiveMessageSize: Int64;
+    FKeepAliveThread: TWebSocketKeepAliveThread;
+    /// <summary>
+    /// Receive ceiling actually applied to WebSocket frames: the configured
+    /// MaximumReceiveMessageSize, never above ABSOLUTE_MAX_MESSAGE_SIZE. The
+    /// constructor already rejects values outside the supported range, so the
+    /// clamp here only guards the absolute cap.
+    /// </summary>
+    function EffectiveMaxMessageSize: Integer;
+    procedure SendKeepAlives;
+    procedure ProcessAsyncData(AConnection: TWebSocketHubConnection;
+      const AWSConnection: IDextWebSocketConnection;
+      const ABuffer: TBytes; ACount: Integer);
+    procedure CompleteAsyncConnection(AConnection: TWebSocketHubConnection;
+      const AWSConnection: IDextWebSocketConnection);
+    function DispatchFrame(AConnection: TWebSocketHubConnection;
+      const AWSConnection: IDextWebSocketConnection;
+      const AFrame: TWebSocketFrame): Boolean;
   public
-    constructor Create;
+    constructor Create(AMaximumReceiveMessageSize: Int64 = 32 * 1024);
     destructor Destroy; override;
 
     // IHubTransport
@@ -89,6 +159,7 @@ type
     procedure SendAsync(const ConnectionId, Data: string);
     procedure CloseConnection(const ConnectionId: string; const Reason: string = '');
     procedure SetOnMessageReceived(const Handler: TOnMessageReceived);
+    procedure SetOnBinaryMessageReceived(const Handler: TOnBinaryHubMessage);
     procedure SetOnConnected(const Handler: TOnConnectionEvent);
     procedure SetOnDisconnected(const Handler: TOnConnectionEvent);
 
@@ -96,33 +167,76 @@ type
     procedure ProcessConnection(const AContext: IHttpContext; var AConnectionId: string);
     procedure CloseAllConnections;
     function IsShuttingDown: Boolean;
-    function GetConnection(const ConnectionId: string): TWebSocketHubConnection;
+    function GetConnection(const ConnectionId: string): IHubConnection;
   end;
 
 implementation
 
 uses
+  System.JSON,
   System.DateUtils,
-  Dext.WebSocket.Protocol,
-  Dext.WebSocket.Handshake;
+  Dext.Resilience,
+  Dext.WebSocket.Handshake,
+  Dext.Web.Hubs.Protocol.Json,
+  Dext.Web.Hubs.Protocol.MessagePack;
+
+const
+  /// Hard ceiling for a single WebSocket message, independent of configuration.
+  /// A receive limit above this is clamped down: the buffers are indexed with
+  /// Integer, and no configured value should be able to push an allocation
+  /// beyond what the transport can address.
+  ABSOLUTE_MAX_MESSAGE_SIZE = 16 * 1024 * 1024;
+
+var
+  GStrictUtf8: TUTF8Encoding;
 
 { TWebSocketHubConnection }
 
+constructor TWebSocketKeepAliveThread.Create(AOwner: TWebSocketHubTransport);
+begin
+  inherited Create(True);
+  FOwner := AOwner;
+  FreeOnTerminate := False;
+end;
+
+procedure TWebSocketKeepAliveThread.Execute;
+begin
+  while not Terminated do
+  begin
+    Sleep(1000);
+    if not Terminated then
+      FOwner.SendKeepAlives;
+  end;
+end;
+
 constructor TWebSocketHubConnection.Create(const AConnectionId: string;
-  const AWSConnection: IDextWebSocketConnection);
+  const AWSConnection: IDextWebSocketConnection;
+  const AUser: IClaimsPrincipal);
 begin
   inherited Create;
   FConnectionId := AConnectionId;
   FWSConnection := AWSConnection;
   FState := csConnected;
+  FUser := AUser;
   FItems := TCollections.CreateDictionary<string, TValue>;
+  FAbortTokenSource := TCancellationTokenSource.Create;
   FLock := TCriticalSection.Create;
+  FReceiveStart := 0;
+  FReceiveEnd := 0;
+  FFragmentActive := False;
+  FLastActivityTick := GetTickCount64;
+  FHandshakeComplete := False;
+  FProtocolName := '';
 end;
 
 destructor TWebSocketHubConnection.Destroy;
 begin
+  FAbortTokenSource.Free;
   FItems := nil;
+  FUser := nil;
   FWSConnection := nil;
+  FReceiveBuffer := nil;
+  FFragmentPayload := nil;
   FLock.Free;
   inherited;
 end;
@@ -144,12 +258,15 @@ end;
 
 function TWebSocketHubConnection.GetUser: IClaimsPrincipal;
 begin
-  Result := nil;
+  Result := FUser;
 end;
 
 function TWebSocketHubConnection.GetUserIdentifier: string;
 begin
-  Result := '';
+  if FUser <> nil then
+    Result := FUser.FindClaim('sub').Value // Standard claim for user ID
+  else
+    Result := '';
 end;
 
 function TWebSocketHubConnection.GetItems: IDictionary<string, TValue>;
@@ -159,18 +276,55 @@ end;
 
 function TWebSocketHubConnection.GetAbortToken: ICancellationToken;
 begin
-  Result := nil;
+  Result := FAbortTokenSource.Token;
 end;
 
 procedure TWebSocketHubConnection.SendAsync(const Message: string);
+var
+  JsonProtocol: TJsonHubProtocol;
+  MessagePackProtocol: TMessagePackHubProtocol;
+  HubMessage: THubMessage;
+begin
+  if SameText(FProtocolName, 'messagepack') then
+  begin
+    JsonProtocol := TJsonHubProtocol.Create;
+    MessagePackProtocol := TMessagePackHubProtocol.Create;
+    try
+      HubMessage := JsonProtocol.Deserialize(Message);
+      FWSConnection.SendBinary(MessagePackProtocol.SerializeBinary(HubMessage));
+    finally
+      MessagePackProtocol.Free;
+      JsonProtocol.Free;
+    end;
+  end
+  else
+    SendPreparedFrame(TWebSocketFrameCodec.EncodeText(Message));
+end;
+
+procedure TWebSocketHubConnection.SendPreparedFrame(const AFrame: TBytes);
 begin
   FLock.Enter;
   try
     if FState = csConnected then
-      FWSConnection.SendText(Message);
+      FWSConnection.SendFrame(AFrame);
   finally
     FLock.Leave;
   end;
+end;
+
+function TWebSocketHubConnection.GetProtocolName: string;
+begin
+  Result := FProtocolName;
+end;
+
+function TWebSocketHubConnection.IsCompressionEnabled: Boolean;
+var
+  Compression: IDextCompressedWebSocketConnection;
+begin
+  Result := Supports(FWSConnection, IDextCompressedWebSocketConnection,
+    Compression);
+  if Result then
+    Result := Compression.IsCompressionEnabled;
 end;
 
 procedure TWebSocketHubConnection.Close(const Reason: string);
@@ -180,6 +334,7 @@ begin
     if FState = csConnected then
     begin
       FState := csDisconnected;
+      FAbortTokenSource.Cancel;
       FWSConnection.Close(1000, Reason);
     end;
   finally
@@ -187,21 +342,89 @@ begin
   end;
 end;
 
+procedure TWebSocketHubConnection.Touch;
+begin
+  TInterlocked.Exchange(FLastActivityTick, Int64(GetTickCount64));
+end;
+
+procedure TWebSocketHubConnection.SendKeepAlive(ANow: UInt64);
+var
+  LastActivity: UInt64;
+begin
+  LastActivity := UInt64(TInterlocked.Read(FLastActivityTick));
+  if (FState = csConnected) and (ANow - LastActivity >= 15000) then
+  begin
+    FWSConnection.SendFrame(TWebSocketFrameCodec.EncodePing);
+    TInterlocked.Exchange(FLastActivityTick, Int64(ANow));
+  end;
+end;
+
 { TWebSocketHubTransport }
 
-constructor TWebSocketHubTransport.Create;
+constructor TWebSocketHubTransport.Create(AMaximumReceiveMessageSize: Int64);
 begin
   inherited Create;
-  FConnections := TCollections.CreateDictionary<string, TWebSocketHubConnection>;
+  if (AMaximumReceiveMessageSize <= 0) or
+     (AMaximumReceiveMessageSize > High(Integer) - 14) then
+    raise EArgumentOutOfRangeException.Create(
+      'MaximumReceiveMessageSize is outside the supported range');
+  FConnections := TCollections.CreateDictionary<string, IHubConnection>;
   FLock := TCriticalSection.Create;
+  FPreparedLock := TCriticalSection.Create;
   FShuttingDown := False;
+  FMaximumReceiveMessageSize := AMaximumReceiveMessageSize;
+  FKeepAliveThread := TWebSocketKeepAliveThread.Create(Self);
+  FKeepAliveThread.Start;
+end;
+
+function TWebSocketHubTransport.EffectiveMaxMessageSize: Integer;
+begin
+  if FMaximumReceiveMessageSize > ABSOLUTE_MAX_MESSAGE_SIZE then
+    Result := ABSOLUTE_MAX_MESSAGE_SIZE
+  else
+    Result := Integer(FMaximumReceiveMessageSize);
 end;
 
 destructor TWebSocketHubTransport.Destroy;
 begin
+  if FKeepAliveThread <> nil then
+  begin
+    FKeepAliveThread.Terminate;
+    FKeepAliveThread.WaitFor;
+    FKeepAliveThread.Free;
+    FKeepAliveThread := nil;
+  end;
   CloseAllConnections;
+  FPreparedLock.Free;
   FLock.Free;
   inherited;
+end;
+
+procedure TWebSocketHubTransport.SendKeepAlives;
+var
+  Connections: TArray<IHubConnection>;
+  Connection: IHubConnection;
+  Control: IWebSocketHubConnectionControl;
+  Index: Integer;
+  NowTick: UInt64;
+begin
+  if FShuttingDown then Exit;
+  FLock.Enter;
+  try
+    SetLength(Connections, FConnections.Count);
+    Index := 0;
+    for Connection in FConnections.Values do
+    begin
+      Connections[Index] := Connection;
+      Inc(Index);
+    end;
+  finally
+    FLock.Leave;
+  end;
+  NowTick := GetTickCount64;
+  for Connection in Connections do
+    if Supports(Connection, IWebSocketHubConnectionControl, Control) then
+      Control.SendKeepAlive(NowTick);
 end;
 
 function TWebSocketHubTransport.GetTransportType: TTransportType;
@@ -216,33 +439,67 @@ end;
 
 procedure TWebSocketHubTransport.SendAsync(const ConnectionId, Data: string);
 var
-  Conn: TWebSocketHubConnection;
+  Conn: IHubConnection;
+  PreparedSender: IWebSocketPreparedSender;
+  PreparedFrame: TBytes;
 begin
   FLock.Enter;
   try
-    if FConnections.TryGetValue(ConnectionId, Conn) then
-      Conn.SendAsync(Data);
+    if not FConnections.TryGetValue(ConnectionId, Conn) then
+      Conn := nil;
   finally
     FLock.Leave;
+  end;
+  if Conn <> nil then
+  begin
+    FPreparedLock.Enter;
+    try
+      if FLastPreparedText <> Data then
+      begin
+        FLastPreparedText := Data;
+        FLastPreparedFrame := TWebSocketFrameCodec.EncodeText(Data);
+      end;
+      PreparedFrame := FLastPreparedFrame;
+    finally
+      FPreparedLock.Leave;
+    end;
+    if Supports(Conn, IWebSocketPreparedSender, PreparedSender) then
+    begin
+      if SameText(PreparedSender.GetProtocolName, 'messagepack') or
+         PreparedSender.IsCompressionEnabled then
+        Conn.SendAsync(Data)
+      else
+        PreparedSender.SendPreparedFrame(PreparedFrame);
+    end
+    else
+      Conn.SendAsync(Data);
   end;
 end;
 
 procedure TWebSocketHubTransport.CloseConnection(const ConnectionId: string; const Reason: string);
 var
-  Conn: TWebSocketHubConnection;
+  Conn: IHubConnection;
 begin
   FLock.Enter;
   try
-    if FConnections.TryGetValue(ConnectionId, Conn) then
-      Conn.Close(Reason);
+    if not FConnections.TryGetValue(ConnectionId, Conn) then
+      Conn := nil;
   finally
     FLock.Leave;
   end;
+  if Conn <> nil then
+    Conn.Close(Reason);
 end;
 
 procedure TWebSocketHubTransport.SetOnMessageReceived(const Handler: TOnMessageReceived);
 begin
   FOnMessageReceived := Handler;
+end;
+
+procedure TWebSocketHubTransport.SetOnBinaryMessageReceived(
+  const Handler: TOnBinaryHubMessage);
+begin
+  FOnBinaryMessageReceived := Handler;
 end;
 
 procedure TWebSocketHubTransport.SetOnConnected(const Handler: TOnConnectionEvent);
@@ -257,16 +514,26 @@ end;
 
 procedure TWebSocketHubTransport.CloseAllConnections;
 var
-  Conn: TWebSocketHubConnection;
+  Connections: TArray<IHubConnection>;
+  Conn: IHubConnection;
+  Index: Integer;
 begin
   FShuttingDown := True;
   FLock.Enter;
   try
+    SetLength(Connections, FConnections.Count);
+    Index := 0;
     for Conn in FConnections.Values do
-      Conn.Close('Server shutting down');
+    begin
+      Connections[Index] := Conn;
+      Inc(Index);
+    end;
   finally
     FLock.Leave;
   end;
+  for Conn in Connections do
+    if Conn <> nil then
+      Conn.Close('Server shutting down');
 end;
 
 function TWebSocketHubTransport.IsShuttingDown: Boolean;
@@ -274,7 +541,7 @@ begin
   Result := FShuttingDown;
 end;
 
-function TWebSocketHubTransport.GetConnection(const ConnectionId: string): TWebSocketHubConnection;
+function TWebSocketHubTransport.GetConnection(const ConnectionId: string): IHubConnection;
 begin
   FLock.Enter;
   try
@@ -291,27 +558,58 @@ var
   ConnectionId: string;
   HubConnection: TWebSocketHubConnection;
   Buffer: TBytes;
-  BufferOffset: Integer;
+  BufferStart: Integer;
+  BufferEnd: Integer;
   BytesRead: Integer;
   Frame: TWebSocketFrame;
   BytesConsumed: Integer;
-  PayloadStr: string;
   KeepAliveTimer: TDateTime;
+  ServerConnection: IDextServerConnection;
+  DecodeResult: TWebSocketDecodeResult;
+  NewCapacity: Integer;
+  AsyncConnection: IDextAsyncWebSocketConnection;
+  CompressedConnection: IDextCompressedWebSocketConnection;
+  AllowRSV1: Boolean;
+  MaxMessageSize: Integer;
+  InitialBufferSize: Integer;
+const
+  DEFAULT_INITIAL_BUFFER_SIZE = 8 * 1024;
 begin
-  WSConn := AContext.Connection.UpgradeToWebSocket;
-  if WSConn = nil then
+  // A receive limit below the initial buffer would allocate past its own
+  // ceiling before the first frame arrives.
+  MaxMessageSize := EffectiveMaxMessageSize;
+  if MaxMessageSize < DEFAULT_INITIAL_BUFFER_SIZE then
+    InitialBufferSize := MaxMessageSize
+  else
+    InitialBufferSize := DEFAULT_INITIAL_BUFFER_SIZE;
+
+  // Engines without a raw server connection (Indy, DCS, WebBroker) return nil.
+  ServerConnection := AContext.Connection;
+  if ServerConnection = nil then
   begin
     AConnectionId := '';
     Exit;
   end;
 
+  WSConn := ServerConnection.UpgradeToWebSocket;
+  if WSConn = nil then
+  begin
+    AConnectionId := '';
+    Exit;
+  end;
+  AllowRSV1 := Supports(WSConn, IDextCompressedWebSocketConnection,
+    CompressedConnection);
+  if AllowRSV1 then
+    AllowRSV1 := CompressedConnection.IsCompressionEnabled;
+
   if AConnectionId = '' then
     ConnectionId := TGUID.NewGuid.ToString.Replace('{', '').Replace('}', '').Replace('-', '')
   else
     ConnectionId := AConnectionId;
-    
+
   AConnectionId := ConnectionId;
-  HubConnection := TWebSocketHubConnection.Create(ConnectionId, WSConn);
+  HubConnection := TWebSocketHubConnection.Create(ConnectionId, WSConn,
+    AContext.User);
 
   FLock.Enter;
   try
@@ -320,61 +618,92 @@ begin
     FLock.Leave;
   end;
 
-  if Assigned(FOnConnected) then
-    FOnConnected(ConnectionId);
+  if Supports(WSConn, IDextAsyncWebSocketConnection, AsyncConnection) then
+  begin
+    AsyncConnection.SetOnData(
+      procedure(const ABuffer: TBytes; ACount: Integer)
+      begin
+        ProcessAsyncData(HubConnection, WSConn, ABuffer, ACount);
+      end);
+    AsyncConnection.SetOnClosed(
+      procedure
+      begin
+        CompleteAsyncConnection(HubConnection, WSConn);
+      end);
+    AsyncConnection.StartReceive;
+    Exit;
+  end;
 
-  SetLength(Buffer, 65536);
-  BufferOffset := 0;
+  SetLength(Buffer, InitialBufferSize);
+  BufferStart := 0;
+  BufferEnd := 0;
   KeepAliveTimer := Now;
 
   try
     while (not FShuttingDown) and (HubConnection.State = csConnected) do
     begin
-      BytesRead := WSConn.Receive(Buffer, BufferOffset, Length(Buffer) - BufferOffset);
+      if BufferEnd = Length(Buffer) then
+      begin
+        if BufferStart > 0 then
+        begin
+          Move(Buffer[BufferStart], Buffer[0], BufferEnd - BufferStart);
+          Dec(BufferEnd, BufferStart);
+          BufferStart := 0;
+        end
+        else
+        begin
+          if Length(Buffer) >= MaxMessageSize then
+          begin
+            WSConn.Close(1009, 'Message too large');
+            Break;
+          end;
+          NewCapacity := Length(Buffer) * 2;
+          if NewCapacity > MaxMessageSize then
+            NewCapacity := MaxMessageSize;
+          SetLength(Buffer, NewCapacity);
+        end;
+      end;
+
+      BytesRead := WSConn.Receive(
+        Buffer, BufferEnd, Length(Buffer) - BufferEnd);
       if BytesRead <= 0 then
         Break;
 
-      Inc(BufferOffset, BytesRead);
+      Inc(BufferEnd, BytesRead);
 
-      while BufferOffset > 0 do
+      while BufferStart < BufferEnd do
       begin
         BytesConsumed := 0;
-        if TWebSocketFrameCodec.TryDecode(Buffer, 0, BufferOffset, Frame, BytesConsumed) then
+        DecodeResult := TWebSocketFrameCodec.Decode(
+          Buffer, BufferStart, BufferEnd - BufferStart, Frame,
+          BytesConsumed, True, MaxMessageSize,
+          AllowRSV1);
+        if DecodeResult = wsDecodeComplete then
         begin
-          case Frame.Opcode of
-            wsText:
-            begin
-              PayloadStr := TEncoding.UTF8.GetString(Frame.Payload);
-              if Assigned(FOnMessageReceived) then
-                FOnMessageReceived(ConnectionId, PayloadStr);
-            end;
-            wsBinary:
-            begin
-              // Binary not handled in Phase 1
-            end;
-            wsClose:
-            begin
-              HubConnection.Close;
-              Break;
-            end;
-            wsPing:
-            begin
-              WSConn.SendBinary(TWebSocketFrameCodec.EncodePong(Frame.Payload));
-            end;
-            wsPong:
-            begin
-              // Keepalive confirmed
-            end;
-          end;
+          if not DispatchFrame(HubConnection, WSConn, Frame) then
+            Break;
 
           if BytesConsumed > 0 then
           begin
-            if BytesConsumed < BufferOffset then
-              Move(Buffer[BytesConsumed], Buffer[0], BufferOffset - BytesConsumed);
-            Dec(BufferOffset, BytesConsumed);
+            Inc(BufferStart, BytesConsumed);
+            if BufferStart = BufferEnd then
+            begin
+              BufferStart := 0;
+              BufferEnd := 0;
+            end;
           end
           else
             Break;
+        end
+        else if DecodeResult = wsDecodeProtocolError then
+        begin
+          WSConn.Close(1002, 'Invalid WebSocket frame');
+          Break;
+        end
+        else if DecodeResult = wsDecodeMessageTooBig then
+        begin
+          WSConn.Close(1009, 'Message too large');
+          Break;
         end
         else
           Break;
@@ -382,7 +711,7 @@ begin
 
       if SecondsBetween(Now, KeepAliveTimer) >= 15 then
       begin
-        WSConn.SendBinary(TWebSocketFrameCodec.EncodePing);
+        WSConn.SendFrame(TWebSocketFrameCodec.EncodePing);
         KeepAliveTimer := Now;
       end;
     end;
@@ -400,5 +729,346 @@ begin
     WSConn.Close(1000);
   end;
 end;
+
+procedure TWebSocketHubTransport.ProcessAsyncData(
+  AConnection: TWebSocketHubConnection;
+  const AWSConnection: IDextWebSocketConnection;
+  const ABuffer: TBytes; ACount: Integer);
+const
+  DEFAULT_INITIAL_BUFFER_SIZE = 8 * 1024;
+var
+  Required: Integer;
+  NewCapacity: Integer;
+  Frame: TWebSocketFrame;
+  Consumed: Integer;
+  DecodeResult: TWebSocketDecodeResult;
+  CompressedConnection: IDextCompressedWebSocketConnection;
+  AllowRSV1: Boolean;
+  MaxMessageSize: Integer;
+  InitialBufferSize: Integer;
+begin
+  if (AConnection = nil) or (ACount <= 0) or FShuttingDown then
+    Exit;
+  MaxMessageSize := EffectiveMaxMessageSize;
+  if MaxMessageSize < DEFAULT_INITIAL_BUFFER_SIZE then
+    InitialBufferSize := MaxMessageSize
+  else
+    InitialBufferSize := DEFAULT_INITIAL_BUFFER_SIZE;
+  AllowRSV1 := Supports(AWSConnection, IDextCompressedWebSocketConnection,
+    CompressedConnection);
+  if AllowRSV1 then
+    AllowRSV1 := CompressedConnection.IsCompressionEnabled;
+  Required := AConnection.FReceiveEnd + ACount;
+  if Required > Length(AConnection.FReceiveBuffer) then
+  begin
+    if AConnection.FReceiveStart > 0 then
+    begin
+      Move(AConnection.FReceiveBuffer[AConnection.FReceiveStart],
+        AConnection.FReceiveBuffer[0],
+        AConnection.FReceiveEnd - AConnection.FReceiveStart);
+      Dec(AConnection.FReceiveEnd, AConnection.FReceiveStart);
+      AConnection.FReceiveStart := 0;
+      Required := AConnection.FReceiveEnd + ACount;
+    end;
+    if Required > Length(AConnection.FReceiveBuffer) then
+    begin
+      NewCapacity := Length(AConnection.FReceiveBuffer);
+      if NewCapacity = 0 then
+        NewCapacity := InitialBufferSize;
+      while (NewCapacity < Required) and
+            (NewCapacity < MaxMessageSize) do
+        NewCapacity := NewCapacity * 2;
+      if (Required > MaxMessageSize) or
+         (NewCapacity > MaxMessageSize) then
+      begin
+        AWSConnection.Close(1009, 'Message too large');
+        Exit;
+      end;
+      SetLength(AConnection.FReceiveBuffer, NewCapacity);
+    end;
+  end;
+  Move(ABuffer[0], AConnection.FReceiveBuffer[AConnection.FReceiveEnd],
+    ACount);
+  Inc(AConnection.FReceiveEnd, ACount);
+
+  while AConnection.FReceiveStart < AConnection.FReceiveEnd do
+  begin
+    Consumed := 0;
+    DecodeResult := TWebSocketFrameCodec.Decode(
+      AConnection.FReceiveBuffer, AConnection.FReceiveStart,
+      AConnection.FReceiveEnd - AConnection.FReceiveStart, Frame,
+      Consumed, True, MaxMessageSize,
+      AllowRSV1);
+    case DecodeResult of
+      wsDecodeIncomplete:
+        Exit;
+      wsDecodeProtocolError:
+        begin
+          AWSConnection.Close(1002, 'Invalid WebSocket frame');
+          Exit;
+        end;
+      wsDecodeMessageTooBig:
+        begin
+          AWSConnection.Close(1009, 'Message too large');
+          Exit;
+        end;
+    end;
+
+    if not DispatchFrame(AConnection, AWSConnection, Frame) then
+      Exit;
+
+    Inc(AConnection.FReceiveStart, Consumed);
+    if AConnection.FReceiveStart = AConnection.FReceiveEnd then
+    begin
+      AConnection.FReceiveStart := 0;
+      AConnection.FReceiveEnd := 0;
+      if Length(AConnection.FReceiveBuffer) > InitialBufferSize then
+        SetLength(AConnection.FReceiveBuffer, InitialBufferSize);
+    end;
+  end;
+end;
+
+function TWebSocketHubTransport.DispatchFrame(
+  AConnection: TWebSocketHubConnection;
+  const AWSConnection: IDextWebSocketConnection;
+  const AFrame: TWebSocketFrame): Boolean;
+var
+  OldLength: Integer;
+  PayloadText: string;
+  TextBytes: TBytes;
+  BinaryBytes: TBytes;
+  MessageOpcode: TWebSocketOpcode;
+  JsonValue: TJSONValue;
+  JsonObject: TJSONObject;
+  ProtocolValue: TJSONValue;
+  VersionValue: TJSONValue;
+  CompressedConnection: IDextCompressedWebSocketConnection;
+  MessageCompressed: Boolean;
+  HasCompression: Boolean;
+begin
+  Result := True;
+  MessageOpcode := AFrame.Opcode;
+  MessageCompressed := AFrame.RSV1;
+  case AFrame.Opcode of
+    wsText:
+      begin
+        if AConnection.FFragmentActive then
+        begin
+          AWSConnection.Close(1002, 'Unexpected data frame');
+          Exit(False);
+        end;
+        if AFrame.FIN then
+          TextBytes := AFrame.Payload
+        else
+        begin
+          AConnection.FFragmentActive := True;
+          AConnection.FFragmentOpcode := wsText;
+          AConnection.FFragmentCompressed := AFrame.RSV1;
+          AConnection.FFragmentPayload := Copy(
+            AFrame.Payload, 0, Length(AFrame.Payload));
+          Exit;
+        end;
+      end;
+
+    wsContinuation:
+      begin
+        if not AConnection.FFragmentActive then
+        begin
+          AWSConnection.Close(1002, 'Unexpected continuation frame');
+          Exit(False);
+        end;
+        OldLength := Length(AConnection.FFragmentPayload);
+        if UInt64(OldLength) + UInt64(Length(AFrame.Payload)) >
+           EffectiveMaxMessageSize then
+        begin
+          AWSConnection.Close(1009, 'Message too large');
+          Exit(False);
+        end;
+        SetLength(AConnection.FFragmentPayload,
+          OldLength + Length(AFrame.Payload));
+        if Length(AFrame.Payload) > 0 then
+          Move(AFrame.Payload[0],
+            AConnection.FFragmentPayload[OldLength],
+            Length(AFrame.Payload));
+        if not AFrame.FIN then
+          Exit;
+        MessageOpcode := AConnection.FFragmentOpcode;
+        MessageCompressed := AConnection.FFragmentCompressed;
+        if MessageOpcode = wsText then
+          TextBytes := AConnection.FFragmentPayload
+        else
+          BinaryBytes := AConnection.FFragmentPayload;
+        AConnection.FFragmentPayload := nil;
+        AConnection.FFragmentActive := False;
+      end;
+
+    wsBinary:
+      begin
+        if AConnection.FFragmentActive then
+        begin
+          AWSConnection.Close(1002, 'Unexpected data frame');
+          Exit(False);
+        end;
+        if AFrame.FIN then
+          BinaryBytes := AFrame.Payload
+        else
+        begin
+          AConnection.FFragmentActive := True;
+          AConnection.FFragmentOpcode := wsBinary;
+          AConnection.FFragmentCompressed := AFrame.RSV1;
+          AConnection.FFragmentPayload := Copy(
+            AFrame.Payload, 0, Length(AFrame.Payload));
+          Exit;
+        end;
+      end;
+
+    wsPing:
+      begin
+        AWSConnection.SendFrame(
+          TWebSocketFrameCodec.EncodePong(AFrame.Payload));
+        Exit;
+      end;
+
+    wsPong:
+      Exit;
+
+    wsClose:
+      begin
+        AWSConnection.Close(1000);
+        Exit(False);
+      end;
+  else
+    begin
+      AWSConnection.Close(1002, 'Unsupported opcode');
+      Exit(False);
+    end;
+  end;
+
+  if MessageCompressed then
+  begin
+    HasCompression := Supports(AWSConnection,
+      IDextCompressedWebSocketConnection, CompressedConnection);
+    if HasCompression then
+      HasCompression := CompressedConnection.IsCompressionEnabled;
+    if not HasCompression then
+    begin
+      AWSConnection.Close(1002, 'Compressed message was not negotiated');
+      Exit(False);
+    end;
+    try
+      if MessageOpcode = wsText then
+        TextBytes := CompressedConnection.DecompressMessage(TextBytes)
+      else
+        BinaryBytes := CompressedConnection.DecompressMessage(BinaryBytes);
+    except
+      on E: Exception do
+      begin
+        AWSConnection.Close(1007, 'Invalid compressed payload');
+        Exit(False);
+      end;
+    end;
+  end;
+
+  if MessageOpcode = wsBinary then
+  begin
+    if not AConnection.FHandshakeComplete or
+       not SameText(AConnection.FProtocolName, 'messagepack') then
+    begin
+      AWSConnection.Close(1003, 'Binary protocol was not negotiated');
+      Exit(False);
+    end;
+    AConnection.Touch;
+    if Assigned(FOnBinaryMessageReceived) then
+      FOnBinaryMessageReceived(AConnection.ConnectionId, BinaryBytes);
+    Exit;
+  end;
+
+  try
+    PayloadText := GStrictUtf8.GetString(TextBytes);
+  except
+    on E: EEncodingError do
+    begin
+      AWSConnection.Close(1007, 'Invalid UTF-8 payload');
+      Exit(False);
+    end;
+  end;
+
+  if not AConnection.FHandshakeComplete then
+  begin
+    if not PayloadText.EndsWith(#$1E) then
+    begin
+      AWSConnection.Close(1002, 'Incomplete SignalR handshake');
+      Exit(False);
+    end;
+    JsonValue := TJSONObject.ParseJSONValue(
+      PayloadText.Substring(0, PayloadText.Length - 1));
+    try
+      if not (JsonValue is TJSONObject) then
+      begin
+        AWSConnection.Close(1002, 'Invalid SignalR handshake');
+        Exit(False);
+      end;
+      JsonObject := TJSONObject(JsonValue);
+      ProtocolValue := JsonObject.GetValue('protocol');
+      VersionValue := JsonObject.GetValue('version');
+      if (ProtocolValue = nil) or (VersionValue = nil) or
+         (VersionValue.Value <> '1') or
+         (not SameText(ProtocolValue.Value, 'json') and
+          not SameText(ProtocolValue.Value, 'messagepack')) then
+      begin
+        AWSConnection.SendText(
+          '{"error":"Unsupported Hub protocol or version"}' + #$1E);
+        AWSConnection.Close(1002, 'Unsupported Hub protocol');
+        Exit(False);
+      end;
+      AConnection.FProtocolName := LowerCase(ProtocolValue.Value);
+      AConnection.FHandshakeComplete := True;
+      AConnection.Touch;
+      AWSConnection.SendText('{}' + #$1E);
+      if Assigned(FOnConnected) then
+        FOnConnected(AConnection.ConnectionId);
+      Exit;
+    finally
+      JsonValue.Free;
+    end;
+  end;
+
+  if not SameText(AConnection.FProtocolName, 'json') then
+  begin
+    AWSConnection.Close(1003, 'Text message for binary Hub protocol');
+    Exit(False);
+  end;
+  AConnection.Touch;
+  if Assigned(FOnMessageReceived) then
+    FOnMessageReceived(AConnection.ConnectionId, PayloadText);
+end;
+
+procedure TWebSocketHubTransport.CompleteAsyncConnection(
+  AConnection: TWebSocketHubConnection;
+  const AWSConnection: IDextWebSocketConnection);
+var
+  ConnectionId: string;
+begin
+  if AConnection = nil then Exit;
+  ConnectionId := AConnection.ConnectionId;
+  FLock.Enter;
+  try
+    FConnections.Remove(ConnectionId);
+  finally
+    FLock.Leave;
+  end;
+  if Assigned(FOnDisconnected) then
+    FOnDisconnected(ConnectionId);
+end;
+
+initialization
+{$IF CompilerVersion >= 35.0}
+  GStrictUtf8 := TUTF8Encoding.Create(False);
+{$ELSE}
+  GStrictUtf8 := TUTF8Encoding.Create;
+{$IFEND}
+
+finalization
+  GStrictUtf8.Free;
 
 end.

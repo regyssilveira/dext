@@ -11,6 +11,7 @@ uses
   System.Rtti,
   System.JSON,
   Dext.Collections,
+  Dext.Auth.Identity,
   // Dext.Hubs units
   Dext.Web.Hubs.Interfaces,
   Dext.Web.Hubs.Types,
@@ -18,8 +19,12 @@ uses
   Dext.Web.Hubs.Connections,
   Dext.Web.Hubs.Clients,
   Dext.Web.Hubs.Context,
+  Dext.Web.Hubs.Middleware,
   Dext.Web.Hubs.Protocol.Json,
-  Dext.Web.Hubs.Client.Tests;
+  Dext.Web.Hubs.Protocol.MessagePack,
+  Dext.Web.Hubs.Transport.SSE,
+  Dext.Web.Hubs.Client.Tests,
+  Dext.Web.Hubs.Middleware.Tests;
 
 var
   TestsPassed: Integer = 0;
@@ -107,6 +112,51 @@ begin
     Json := TJsonHubProtocol.SerializeClose('Error message');
     Check(Pos('"type":7', Json) > 0, 'SerializeClose type');
     Check(Pos('"error":"Error message"', Json) > 0, 'SerializeClose error');
+  finally
+    Protocol.Free;
+  end;
+end;
+
+procedure TestTMessagePackHubProtocol;
+var
+  Protocol: TMessagePackHubProtocol;
+  Msg, Parsed: THubMessage;
+  Data: TBytes;
+  Consumed: Integer;
+begin
+  WriteLn;
+  WriteLn('=== TMessagePackHubProtocol Tests ===');
+  Protocol := TMessagePackHubProtocol.Create;
+  try
+    Data := Protocol.SerializeBinary(THubMessage.Ping);
+    Check((Length(Data) = 3) and (Data[0] = $02) and
+      (Data[1] = $91) and (Data[2] = $06),
+      'MessagePack Ping matches SignalR wire vector');
+    Check(Protocol.IsCompleteBinary(Data, 0, Length(Data)),
+      'MessagePack complete frame detection');
+    Check(not Protocol.IsCompleteBinary(Data, 0, Length(Data) - 1),
+      'MessagePack partial frame detection');
+
+    Msg := THubMessage.Invocation('Add',
+      [TValue.From<Integer>(20), TValue.From<Integer>(22)]);
+    Msg.InvocationId := 'inv-1';
+    Data := Protocol.SerializeBinary(Msg);
+    Parsed := Protocol.DeserializeBinary(Data, 0, Length(Data), Consumed);
+    Check(Consumed = Length(Data), 'MessagePack consumes one framed message');
+    Check(Parsed.MessageType = hmtInvocation, 'MessagePack invocation type');
+    Check(Parsed.InvocationId = 'inv-1', 'MessagePack invocation id');
+    Check(Parsed.Target = 'Add', 'MessagePack invocation target');
+    Check((Length(Parsed.Arguments) = 2) and
+      (Parsed.Arguments[0].AsInteger = 20) and
+      (Parsed.Arguments[1].AsInteger = 22),
+      'MessagePack invocation arguments');
+
+    Msg := THubMessage.Completion('inv-1', TValue.From<Integer>(42));
+    Data := Protocol.SerializeBinary(Msg);
+    Parsed := Protocol.DeserializeBinary(Data, 0, Length(Data), Consumed);
+    Check((Parsed.MessageType = hmtCompletion) and
+      (Parsed.InvocationId = 'inv-1') and
+      (Parsed.Result.AsInteger = 42), 'MessagePack completion roundtrip');
   finally
     Protocol.Free;
   end;
@@ -205,7 +255,7 @@ end;
 
 procedure TestTNegotiateResponse;
 var
-  Response: TNegotiateResponse;
+  Response, WebSocketResponse: TNegotiateResponse;
   Json: string;
 begin
   WriteLn;
@@ -215,12 +265,68 @@ begin
   
   Check(Response.ConnectionId = 'test-connection-id', 'ConnectionId');
   Check(Response.NegotiateVersion = 1, 'NegotiateVersion');
-  Check(Length(Response.AvailableTransports) = 3, 'AvailableTransports count');
+  Check(Length(Response.AvailableTransports) = 1, 'SSE-only transport count');
+  Check(Response.AvailableTransports[0].Transport = 'ServerSentEvents',
+    'SSE-only negotiation does not over-advertise transports');
+
+  WebSocketResponse := TNegotiateResponse.Create('test-connection-id', True);
+  Check(Length(WebSocketResponse.AvailableTransports) = 2,
+    'WebSocket-capable transport count');
+  Check(WebSocketResponse.AvailableTransports[0].Transport = 'WebSockets',
+    'WebSocket is preferred when the HTTP engine supports upgrade');
+  Check(WebSocketResponse.AvailableTransports[1].Transport = 'ServerSentEvents',
+    'SSE remains the WebSocket fallback');
   
   Json := Response.ToJson;
   Check(Pos('"connectionId":"test-connection-id"', Json) > 0, 'ToJson connectionId');
   Check(Pos('"negotiateVersion":1', Json) > 0, 'ToJson negotiateVersion');
   Check(Pos('"availableTransports":', Json) > 0, 'ToJson availableTransports');
+end;
+
+procedure TestAuthenticatedCallerContextAbort;
+var
+  Identity: IIdentity;
+  Principal: IClaimsPrincipal;
+  ClaimsBuilder: IClaimsBuilder;
+  Connection: THubConnection;
+  Context: THubCallerContext;
+begin
+  WriteLn;
+  WriteLn('=== Authenticated Hub Context Tests ===');
+
+  Identity := TClaimsIdentity.Create('user-1', 'Test');
+  ClaimsBuilder := TClaimsBuilder.Create;
+  ClaimsBuilder.WithNameIdentifier('user-1');
+  Principal := TClaimsPrincipal.Create(Identity, ClaimsBuilder.Build);
+
+  Connection := THubConnection.Create('auth-connection', ttWebSockets,
+    Principal);
+  try
+    Connection.SetState(csConnected);
+    Context := THubCallerContext.Create(Connection.ConnectionId,
+      Connection.TransportType, Connection.GetUser, Connection.GetAbortToken,
+      procedure
+      begin
+        Connection.Close('test abort');
+      end);
+    try
+      Check(Context.User = Principal, 'Caller principal is propagated');
+      Check(Context.UserIdentifier = 'user-1',
+        'Caller user identifier is propagated');
+      Check(Context.TransportType = ttWebSockets,
+        'Caller transport type is propagated');
+
+      Context.Abort;
+      Check(Connection.State = csDisconnected,
+        'Abort closes the underlying connection');
+      Check(Connection.GetAbortToken.IsCancellationRequested,
+        'Abort cancels the connection token');
+    finally
+      Context.Free;
+    end;
+  finally
+    Connection.Free;
+  end;
 end;
 
 procedure TestTHubContext;
@@ -272,13 +378,20 @@ end;
 type
   TTestHub = class(THub)
   public
+    [HubMethod]
     procedure TestMethod(const Message: string);
+    procedure ServerOnlyMethod;
   end;
 
 procedure TTestHub.TestMethod(const Message: string);
 begin
   // Test method - would normally send to clients
   Clients.All.SendAsync('Echo', [TValue.From(Message)]);
+end;
+
+procedure TTestHub.ServerOnlyMethod;
+begin
+  // Intentionally public, but not remotely invokable.
 end;
 
 procedure TestTHub;
@@ -321,6 +434,134 @@ begin
     end;
   finally
     Hub.Free;
+  end;
+end;
+
+procedure TestHubMethodAllowlist;
+var
+  ConnectionManager: IConnectionManager;
+  ConcreteConnectionManager: TConnectionManager;
+  GroupManager: IGroupManager;
+  Connection: IHubConnection;
+  SSETransport: TSSETransport;
+  Dispatcher: THubDispatcher;
+begin
+  WriteLn;
+  WriteLn('=== Hub Method Allowlist Tests ===');
+
+  GroupManager := TGroupManager.Create;
+  ConcreteConnectionManager := TConnectionManager.Create;
+  ConcreteConnectionManager.SetGroupManager(GroupManager);
+  ConnectionManager := ConcreteConnectionManager;
+  Connection := THubConnection.Create('allowlist-connection',
+    ttServerSentEvents);
+  ConnectionManager.Add(Connection);
+  SSETransport := TSSETransport.Create;
+  Dispatcher := THubDispatcher.Create(TTestHub, ConnectionManager,
+    GroupManager, SSETransport);
+  try
+    try
+      Dispatcher.InvokeMethod('allowlist-connection', 'TestMethod',
+        [TValue.From('allowed')]);
+      Check(True, 'Annotated Hub method is client-invokable');
+    except
+      Check(False, 'Annotated Hub method is client-invokable');
+    end;
+
+    try
+      Dispatcher.InvokeMethod('allowlist-connection', 'ServerOnlyMethod', []);
+      Check(False, 'Public server-only method is blocked');
+    except
+      on E: EHubMethodNotFoundException do
+        Check(True, 'Public server-only method is blocked');
+      else
+        Check(False, 'Public server-only method is blocked');
+    end;
+
+    try
+      Dispatcher.InvokeMethod('allowlist-connection', 'OnConnectedAsync', []);
+      Check(False, 'Hub lifecycle method is blocked');
+    except
+      on E: EHubMethodNotFoundException do
+        Check(True, 'Hub lifecycle method is blocked');
+      else
+        Check(False, 'Hub lifecycle method is blocked');
+    end;
+  finally
+    Dispatcher.Free;
+    SSETransport.Free;
+  end;
+end;
+
+procedure TestHubMethodAllowlistOptOut;
+var
+  ConnectionManager: IConnectionManager;
+  ConcreteConnectionManager: TConnectionManager;
+  GroupManager: IGroupManager;
+  Connection: IHubConnection;
+  SSETransport: TSSETransport;
+  Dispatcher: THubDispatcher;
+begin
+  WriteLn;
+  WriteLn('=== Hub Method Allowlist Opt-Out Tests ===');
+
+  ConcreteConnectionManager := TConnectionManager.Create;
+  ConnectionManager := ConcreteConnectionManager;
+  GroupManager := TGroupManager.Create;
+  Connection := THubConnection.Create('optout-connection', ttServerSentEvents);
+  ConnectionManager.Add(Connection);
+  SSETransport := TSSETransport.Create;
+
+  // RequireHubMethodAttribute = False restores the pre-allowlist behaviour, so
+  // an existing Hub keeps working while its methods are being annotated.
+  Dispatcher := THubDispatcher.Create(TTestHub, ConnectionManager, GroupManager,
+    SSETransport, False);
+  try
+    try
+      Dispatcher.InvokeMethod('optout-connection', 'ServerOnlyMethod', []);
+      Check(True, 'Opt-out allows an unannotated public method');
+    except
+      Check(False, 'Opt-out allows an unannotated public method');
+    end;
+
+    try
+      Dispatcher.InvokeMethod('optout-connection', 'NoSuchMethod', []);
+      Check(False, 'Opt-out still rejects a method that does not exist');
+    except
+      on E: EHubMethodNotFoundException do
+        Check(True, 'Opt-out still rejects a method that does not exist');
+      else
+        Check(False, 'Opt-out still rejects a method that does not exist');
+    end;
+  finally
+    Dispatcher.Free;
+    SSETransport.Free;
+  end;
+end;
+
+procedure TestHubReceiveLimitConfiguration;
+var
+  Options: THubOptions;
+  Middleware: THubMiddleware;
+begin
+  WriteLn;
+  WriteLn('=== Hub Receive Limit Configuration Tests ===');
+
+  Options := THubOptions.Default;
+  Options.MaximumReceiveMessageSize := 0;
+  Middleware := nil;
+  try
+    try
+      Middleware := THubMiddleware.Create(Options);
+      Check(False, 'Zero receive limit is rejected');
+    except
+      on E: EArgumentOutOfRangeException do
+        Check(True, 'Zero receive limit is rejected');
+      else
+        Check(False, 'Zero receive limit is rejected');
+    end;
+  finally
+    Middleware.Free;
   end;
 end;
 
@@ -590,12 +831,17 @@ begin
     
     TestTHubMessage;
     TestTJsonHubProtocol;
+    TestTMessagePackHubProtocol;
     TestTConnectionManager;
     TestTGroupManager;
     TestTNegotiateResponse;
     TestTHubContext;
     TestTHubCallerContext;
+    TestAuthenticatedCallerContextAbort;
     TestTHub;
+    TestHubMethodAllowlist;
+    TestHubMethodAllowlistOptOut;
+    TestHubReceiveLimitConfiguration;
     TestValueSerialization;
     
     // New tests
@@ -605,6 +851,9 @@ begin
     TestProtocolMultipleArguments;
     TestProtocolWithInvocationId;
     
+    // Hub middleware tests (engines without an upgradable connection)
+    RunMiddlewareTests(TestsPassed, TestsFailed);
+
     // Delphi Hub Client Tests
     RunClientTests(TestsPassed, TestsFailed);
     

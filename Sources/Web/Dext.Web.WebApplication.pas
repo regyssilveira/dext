@@ -1,4 +1,4 @@
-﻿{***************************************************************************}
+{***************************************************************************}
 {                                                                           }
 {           Dext Framework                                                  }
 {                                                                           }
@@ -53,6 +53,11 @@ type
     FDefaultPort: Integer;
     FActiveHost: IWebHost; // ? Track active host
     FServerFactory: TServerFactory;
+    /// Guards Teardown so it runs exactly once per Setup. When Run is hosted on
+    /// a background thread, Stop and Run's own finally block can both reach
+    /// Teardown at the same time. Interlocked, because the state check inside
+    /// Teardown is check-then-act and cannot close that window on its own.
+    FTeardownFlag: Integer;
 
     procedure Setup(Port: Integer);
     procedure Teardown;
@@ -112,6 +117,8 @@ implementation
 
 uses
   System.SysUtils,
+  System.Classes, // EInvalidOperation (single-use lifecycle guard)
+  System.SyncObjs, // TInterlocked (single-run teardown guard)
   Dext.Utils,
   Dext.DI.Core,
   Dext.Logging.Global,
@@ -364,8 +371,21 @@ var
   RootFile: string;
   ProviderName: string;
 begin
+  // Single-use lifecycle: once the application has been stopped, Teardown has
+  // released the service collection and the configuration to break the circular
+  // references held by closures. Setup would then rebuild the provider from
+  // FServices, which no longer exists -- a read of address 0.
+  //
+  // Refusing here turns that access violation into a sentence that says what to
+  // do instead. The flag is the one Teardown sets, so this covers every way of
+  // getting back in: Start, Run, or Setup called directly.
+  if TInterlocked.CompareExchange(FTeardownFlag, 0, 0) <> 0 then
+    raise EInvalidOperation.Create
+      ('This WebApplication instance has been stopped and cannot be restarted. ' +
+      'Create a new instance instead: App := WebApplication;');
+
   FDefaultPort := Port;
-  
+
   // Build ServiceProvider now if not already built via BuildServices()
   // This is the correct place to do it, AFTER all services have been registered
   if FServiceProvider = nil then
@@ -448,7 +468,6 @@ begin
   RequestHandler := GetApplicationBuilder.Build;
 
   // Create WebHost
-  SSLHandler := nil;
   ServerSection := FConfiguration.GetSection('Server');
   if (ServerSection <> nil) and (SameText(ServerSection['UseHttps'], 'true')) then
   begin
@@ -456,11 +475,11 @@ begin
     KeyFile := ServerSection['SslKey'];
     RootFile := ServerSection['SslRootCert'];
     
-    // Only enable SSL if certificate files exist
-    if (CertFile <> '') and (KeyFile <> '') and 
-       FileExists(CertFile) and FileExists(KeyFile) then
+    // Only enable SSL if certificate files exist or if ProviderName is HttpSys
+    ProviderName := ServerSection['SslProvider'];
+    if SameText(ProviderName, 'HttpSys') or 
+       ((CertFile <> '') and (KeyFile <> '') and FileExists(CertFile) and FileExists(KeyFile)) then
     begin
-      ProviderName := ServerSection['SslProvider'];
       if SameText(ProviderName, 'Taurus') then
         SSLHandler := TDextIndyTaurusSSLHandler.Create(CertFile, KeyFile, RootFile)
       else
@@ -488,6 +507,14 @@ var
   LifetimeIntf: IInterface;
   ManagerIntf: IInterface;
 begin
+  // Exactly one teardown per Setup, whichever thread gets here first.
+  // CompareExchange returns the PREVIOUS value: 0 for the winner, 1 for anyone
+  // arriving afterwards. This has to be the very first statement -- the state
+  // checks below are check-then-act and both threads would pass them, because
+  // the state only becomes asStopped after the whole body has run.
+  if TInterlocked.CompareExchange(FTeardownFlag, 1, 0) <> 0 then
+    Exit;
+
   if FServiceProvider = nil then Exit;
 
   // Resolve services
@@ -611,6 +638,7 @@ end;
 procedure TWebApplication.Stop;
 var
   LifetimeIntf: IInterface;
+  LHost: IWebHost;
 begin
   if FServiceProvider <> nil then
   begin
@@ -619,12 +647,17 @@ begin
       (LifetimeIntf as IHostApplicationLifetime).StopApplication;
   end;
 
-  if FActiveHost <> nil then
+  // Snapshot into a local interface reference. StopApplication above can wake
+  // the Run loop on another thread, whose Teardown sets FActiveHost to nil --
+  // testing the field and then calling through it would dereference nil right
+  // in that window. The local reference also keeps the host alive for the call.
+  LHost := FActiveHost;
+  if LHost <> nil then
   begin
     LogInfo('Stopping active host...');
-    FActiveHost.Stop;
+    LHost.Stop;
   end;
-  
+
   Teardown;
 end;
 
@@ -652,10 +685,38 @@ begin
 end;
 
 procedure TWebApplication.UseNativeServer(const AOptions: TServerEngineOptions);
+var
+  Opts: TServerEngineOptions;
+  ServerSec: IConfigurationSection;
 begin
+  Opts := AOptions;
+  ServerSec := FConfiguration.GetSection('Server');
+  if ServerSec <> nil then
+  begin
+    if SameText(ServerSec['UseHttps'], 'true') then
+      Opts.UseHttps := True;
+    if ServerSec['SslCertHash'] <> '' then
+      Opts.SslCertHash := ServerSec['SslCertHash'];
+    Opts.SslCertFile := ServerSec['SslCert'];
+    Opts.SslKeyFile := ServerSec['SslKey'];
+    Opts.SslRootCertFile := ServerSec['SslRootCert'];
+    if ServerSec['SslProvider'] <> '' then
+      Opts.SslProvider := ServerSec['SslProvider'];
+    if ServerSec['SslCertStore'] <> '' then
+      Opts.SslCertStoreName := ServerSec['SslCertStore'];
+    if ServerSec['HttpSysAppId'] <> '' then
+      try
+        Opts.HttpSysAppId := StringToGUID(ServerSec['HttpSysAppId']);
+      except
+        on E: EConvertError do
+        raise EArgumentException.Create(
+          'Server:HttpSysAppId must be a valid GUID');
+      end;
+  end;
+
   FServerFactory := function(Port: Integer; Pipeline: TRequestDelegate; Services: IServiceProvider): IWebHost
     begin
-      Result := TDextNativeWebServer.Create(Port, Pipeline, Services, AOptions);
+      Result := TDextNativeWebServer.Create(Port, Pipeline, Services, Opts);
     end;
 end;
 
