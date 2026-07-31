@@ -24,15 +24,25 @@ $SearchPath = ($SearchRoots | Sort-Object -Unique) -join ';'
 
 Push-Location $ProjectDir
 try {
-    & dcc32 -B -Q `
-        "-E$OutputDir" `
-        "-N0$env:OUTPUT_PATH" `
-        "-U$SearchPath" `
-        "-I$SearchPath" `
-        '-NSSystem;Xml;Data;Datasnap;Web;Soap;Winapi;Vcl' `
-        'Dext.Core.UnitTests.dpr'
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
+    $BuildExitCode = 1
+    for ($Attempt = 1; $Attempt -le 5; $Attempt++) {
+        & dcc32 -B -Q `
+            "-E$OutputDir" `
+            "-N0$env:OUTPUT_PATH" `
+            "-U$SearchPath" `
+            "-I$SearchPath" `
+            '-NSSystem;Xml;Data;Datasnap;Web;Soap;Winapi;Vcl' `
+            'Dext.Core.UnitTests.dpr'
+        $BuildExitCode = $LASTEXITCODE
+        if ($BuildExitCode -eq 0) {
+            break
+        }
+        if ($Attempt -lt 5) {
+            Start-Sleep -Seconds (2 * $Attempt)
+        }
+    }
+    if ($BuildExitCode -ne 0) {
+        exit $BuildExitCode
     }
 } finally {
     Pop-Location
