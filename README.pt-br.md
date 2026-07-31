@@ -43,6 +43,12 @@ O Dext foi desenhado especificamente para resolver as dores reais enfrentadas pe
 
 ## Quick Start
 
+Instale o release candidate com o Boss4D:
+
+```powershell
+boss4d add Dext@1.0.0-rc.2
+```
+
 Veja como a estrutura do Dext simplifica fluxos complexos em código limpo, tipado e orientado a objetos. Explorando os pilares do framework:
 
 ### Minimal API
